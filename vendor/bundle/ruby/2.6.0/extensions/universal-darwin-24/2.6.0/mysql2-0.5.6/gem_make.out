@@ -1,0 +1,39 @@
+current directory: /Users/asheishenov/coffee-bot/vendor/bundle/ruby/2.6.0/gems/mysql2-0.5.6/ext/mysql2
+/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/ruby -I /System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/lib/ruby/2.6.0 -r ./siteconf20250407-64424-1u62g2z.rb extconf.rb
+checking for rb_absint_size()... yes
+checking for rb_absint_singlebit_p()... yes
+checking for rb_gc_mark_movable()... no
+checking for rb_wait_for_single_fd()... yes
+checking for rb_enc_interned_str() in ruby.h... no
+-----
+Cannot find library dir(s) /AppleInternal/Library/BuildRoots/d187755d-b9a3-11ef-83e5-aabfac210453/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.3.Internal.sdk/usr/local/libressl-by-deployment-target/13.0/lib
+-----
+*** extconf.rb failed ***
+Could not create Makefile due to some reason, probably lack of necessary
+libraries and/or headers.  Check the mkmf.log file for more details.  You may
+need configuration options.
+
+Provided configuration options:
+	--with-opt-dir
+	--without-opt-dir
+	--with-opt-include
+	--without-opt-include=${opt-dir}/include
+	--with-opt-lib
+	--without-opt-lib=${opt-dir}/lib
+	--with-make-prog
+	--without-make-prog
+	--srcdir=.
+	--curdir
+	--ruby=/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/$(RUBY_BASE_NAME)
+	--with-openssl-dir
+	--with-openssl-dir
+	--with-openssl-include
+	--without-openssl-include=${openssl-dir}/include
+	--with-openssl-lib
+	--without-openssl-lib=${openssl-dir}/lib
+
+To see why this extension failed to compile, please check the mkmf.log which can be found here:
+
+  /Users/asheishenov/coffee-bot/vendor/bundle/ruby/2.6.0/extensions/universal-darwin-24/2.6.0/mysql2-0.5.6/mkmf.log
+
+extconf failed, exit code 1
