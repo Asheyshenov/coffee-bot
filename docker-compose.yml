@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for production
+  postgres:
+    image: postgres:15-alpine
+    container_name: coffee-bot-db
+    environment:
+      POSTGRES_DB: coffee_bot
+      POSTGRES_USER: coffee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coffee_secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coffee -d coffee_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Telegram bot service
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: coffee-bot
+    command: bin/bot
+    environment:
+      - RACK_ENV=production
+      - DATABASE_URL=postgres://coffee:${POSTGRES_PASSWORD:-coffee_secret}@postgres:5432/coffee_bot
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - BARISTA_WHITELIST=${BARISTA_WHITELIST}
+      - ORDER_EXPIRE_MINUTES=${ORDER_EXPIRE_MINUTES:-15}
+      - QRPAY_BASE_URL=${QRPAY_BASE_URL}
+      - QRPAY_MERCHANT_ID=${QRPAY_MERCHANT_ID}
+      - QRPAY_SECRET_KEY=${QRPAY_SECRET_KEY}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+
+  # HTTP callback server
+  callback:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: coffee-bot-callback
+    command: bin/callback_app
+    environment:
+      - RACK_ENV=production
+      - DATABASE_URL=postgres://coffee:${POSTGRES_PASSWORD:-coffee_secret}@postgres:5432/coffee_bot
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - BARISTA_WHITELIST=${BARISTA_WHITELIST}
+      - ORDER_EXPIRE_MINUTES=${ORDER_EXPIRE_MINUTES:-15}
+      - QRPAY_BASE_URL=${QRPAY_BASE_URL}
+      - QRPAY_MERCHANT_ID=${QRPAY_MERCHANT_ID}
+      - QRPAY_SECRET_KEY=${QRPAY_SECRET_KEY}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+    ports:
+      - "9292:9292"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  postgres_data:

@@ -1,0 +1,40 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Telegram Bot Entry Point
+# This script starts the Telegram bot in polling mode
+
+# Add lib directory to load path
+$LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
+
+# Load configuration and database
+require_relative '../config/boot'
+
+# Load all models
+Dir[File.expand_path('../lib/models/*.rb', __dir__)].sort.each { |f| require f }
+
+# Load all services
+Dir[File.expand_path('../lib/services/**/*.rb', __dir__)].sort.each { |f| require f }
+
+# Load bot router
+require_relative '../lib/bot/router'
+
+# Start the bot
+log_info('Starting Coffee Bot...', 
+  environment: CoffeeBot::Config::RACK_ENV,
+  database: CoffeeBot::Config::DATABASE_URL.split('/').last
+)
+
+begin
+  bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
+  
+  # Run bot with router
+  bot.run do |bot_instance|
+    CoffeeBot::Bot::Router.new(bot_instance).run
+  end
+rescue Interrupt
+  log_info('Bot stopped by user')
+rescue StandardError => e
+  log_error('Bot crashed', error: e.message, backtrace: e.backtrace.first(5))
+  raise
+end

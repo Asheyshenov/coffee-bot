@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# HTTP Callback Server Entry Point
+# This script starts the Sinatra server for QRPay callbacks
+
+# Add lib directory to load path
+$LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
+
+# Load configuration and database
+require_relative '../config/boot'
+
+# Load all models
+Dir[File.expand_path('../lib/models/*.rb', __dir__)].sort.each { |f| require f }
+
+# Load all services
+Dir[File.expand_path('../lib/services/**/*.rb', __dir__)].sort.each { |f| require f }
+
+# Load callback app
+require_relative '../lib/http/callback_app'
+
+log_info('Starting Callback Server...', 
+  environment: CoffeeBot::Config::RACK_ENV,
+  port: 9292
+)
+
+# Run the Sinatra app
+CoffeeBot::HTTP::CallbackApp.run!
