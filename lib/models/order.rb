@@ -219,12 +219,13 @@ class Order < Sequel::Model
     true
   end
 
-  # Set invoice data from QRPay
+  # Set invoice data from payment provider (QRPay or MWallet)
   def set_invoice_data(invoice_data)
     update(
       invoice_id_provider: invoice_data[:invoice_id],
-      qr_payload: invoice_data[:qr_payload],
-      qr_url: invoice_data[:qr_url],
+      qr_payload: invoice_data[:qr_payload] || invoice_data[:emv_qr_data],
+      qr_url: invoice_data[:qr_url] || invoice_data[:paylink_url],
+      emv_qr_url: invoice_data[:emv_qr_url],  # URL to QR image from MWallet
       qr_image_base64: invoice_data[:qr_image_base64],
       expires_at: invoice_data[:expires_at],
       raw_create_response: invoice_data[:raw_response]

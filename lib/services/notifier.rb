@@ -55,28 +55,38 @@ module CoffeeBot
         send_to_client(order.telegram_user_id, text)
       end
 
-      # Send payment QR code to client
+      # Send payment link to client
       #
       # @param order [Order] The order
-      # @param invoice_data [Hash] Invoice data with QR
+      # @param invoice_data [Hash] Invoice data with payment link
       def send_payment_qr(order, invoice_data)
+        # Use paylink_url (mwallet) or qr_url (legacy)
+        payment_url = invoice_data[:paylink_url] || invoice_data[:qr_url]
+        emv_qr_url = invoice_data[:emv_qr_url]
+
+        # First, send QR code image if URL is available
+        if emv_qr_url
+          send_qr_image_from_url(order.telegram_user_id, emv_qr_url)
+        end
+
+        # Then send text with payment link button
         text = <<~TEXT
           💳 Оплата заказа ##{order.id}
           
           💰 Сумма: #{order.formatted_total}
           
-          Отсканируйте QR-код или перейдите по ссылке для оплаты.
+          Отсканируйте QR-код выше или перейдите по ссылке для оплаты.
           
           ⏰ Ссылка действительна #{CoffeeBot::Config::ORDER_EXPIRE_MINUTES} минут.
         TEXT
 
         # Send text with payment link
-        if invoice_data[:qr_url]
+        if payment_url
           keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
             inline_keyboard: [
               [Telegram::Bot::Types::InlineKeyboardButton.new(
                 text: '💳 Оплатить',
-                url: invoice_data[:qr_url]
+                url: payment_url
               )],
               [Telegram::Bot::Types::InlineKeyboardButton.new(
                 text: '🔄 Проверить оплату',
@@ -88,11 +98,6 @@ module CoffeeBot
           send_to_client(order.telegram_user_id, text, reply_markup: keyboard)
         else
           send_to_client(order.telegram_user_id, text)
-        end
-
-        # Send QR code as photo if available
-        if invoice_data[:qr_image_base64]
-          send_qr_image(order.telegram_user_id, invoice_data[:qr_image_base64])
         end
       end
 
@@ -220,7 +225,32 @@ module CoffeeBot
         false
       end
 
-      # Send QR code as image
+      # Send QR code as image from URL
+      def send_qr_image_from_url(chat_id, url)
+        require 'tempfile'
+        require 'open-uri'
+
+        # Download image from URL
+        image_data = URI.open(url).read
+
+        # Write to temp file
+        Tempfile.create(['qr', '.png']) do |file|
+          file.binmode
+          file.write(image_data)
+          file.rewind
+
+          # Send photo
+          bot.api.send_photo(
+            chat_id: chat_id,
+            photo: Faraday::UploadIO.new(file.path, 'image/png'),
+            caption: "QR-код для оплаты"
+          )
+        end
+      rescue StandardError => e
+        log_error('Failed to send QR image from URL', chat_id: chat_id, url: url, error: e.message)
+      end
+
+      # Send QR code as image (base64)
       def send_qr_image(chat_id, base64_data)
         require 'tempfile'
         require 'base64'

@@ -4,7 +4,7 @@
 # Handles order lifecycle and business logic
 
 require_relative '../../config/boot'
-require_relative 'qrpay/qrpay_service'
+require_relative 'mwallet/mwallet_service'
 
 module CoffeeBot
   module Services
@@ -17,8 +17,8 @@ module CoffeeBot
       def self.create_from_draft(draft, client)
         order = Order.create_from_draft(draft, client)
         
-        log_info('Order created', 
-          order_id: order.id, 
+        log_info('Order created',
+          order_id: order.id,
           client: client.display_name,
           total: order.formatted_total
         )
@@ -29,11 +29,11 @@ module CoffeeBot
       # Create invoice for order
       #
       # @param order [Order] The order to create invoice for
-      # @return [Hash] Invoice data with QR code
+      # @return [Hash] Invoice data with payment link
       def self.create_invoice(order)
-        qrpay = QRPay::Service.new
-        qrpay.create_invoice_for_order(order)
-      rescue QRPayError::Base => e
+        mwallet = MWallet::Service.new
+        mwallet.create_invoice_for_order(order)
+      rescue MWalletError::Base => e
         log_error('Failed to create invoice', order_id: order.id, error: e.message)
         raise
       end
@@ -104,10 +104,9 @@ module CoffeeBot
         order = Order[order_id]
         return false unless order
         
-        # If order has invoice, cancel it with provider
+        # MWallet doesn't have cancel API in v1, just mark as cancelled locally
         if order.invoice_id_provider && order.status == OrderStatus::INVOICE_CREATED
-          qrpay = QRPay::Service.new
-          qrpay.cancel_invoice(order, reason)
+          order.cancel!(reason)
         else
           order.cancel!(reason)
         end
@@ -120,8 +119,8 @@ module CoffeeBot
       def self.sync_payment_status(order)
         return false unless order.invoice_id_provider
         
-        qrpay = QRPay::Service.new
-        qrpay.sync_status(order)
+        mwallet = MWallet::Service.new
+        mwallet.sync_status(order)
       end
 
       # Expire old invoices
@@ -185,11 +184,10 @@ module CoffeeBot
       #
       # @param params [Hash] Callback parameters
       # @param raw_body [String] Raw request body
-      # @param signature [String] Request signature
       # @return [Boolean] True if processed
-      def self.process_payment_callback(params, raw_body, signature)
-        qrpay = QRPay::Service.new
-        qrpay.process_callback(params, raw_body, signature)
+      def self.process_payment_callback(params, raw_body)
+        mwallet = MWallet::Service.new
+        mwallet.process_callback(params, raw_body)
       end
     end
   end
