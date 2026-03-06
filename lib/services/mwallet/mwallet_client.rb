@@ -23,11 +23,59 @@ module MWallet
       @test_mode = config[:test_mode] || CoffeeBot::Config::MWALLET_TEST_MODE
 
       @signer = Signer.new(@password)
+      @connection = build_connection
     end
 
     # Create invoice
     def create_invoice(params)
-      # Build data hash - compact to remove nil values
+      request_params = build_invoice_params(params)
+      log_request('createInvoice', request_params)
+
+      signed_params = @signer.build_signed_request(request_params)
+      response = with_retry { @connection.post('/api/json/json.php', signed_params) }
+
+      handle_response(response, 'createInvoice')
+    end
+
+    # Get payment status
+    def get_status(invoice_id)
+      request_params = {
+        'cmd' => 'statusPayment',
+        'version' => @version,
+        'sid' => @sid,
+        'mktime' => Time.now.to_i.to_s,
+        'lang' => 'ru',
+        'data' => { 'invoice_id' => invoice_id }
+      }
+
+      log_request('statusPayment', request_params)
+
+      signed_params = @signer.build_signed_request(request_params)
+      response = with_retry { @connection.post('/api/json/json.php', signed_params) }
+
+      handle_response(response, 'statusPayment')
+    end
+
+    # Verify callback signature
+    def verify_callback_signature(params)
+      @signer.verify_callback(params)
+    end
+
+    private
+
+    # Build reusable Faraday connection
+    def build_connection
+      Faraday.new(url: @base_url) do |c|
+        c.request :json
+        c.response :json, content_type: /\bjson$/
+        c.headers['Content-Type'] = 'application/json'
+        c.options.timeout = @timeout
+        c.options.open_timeout = @timeout
+      end
+    end
+
+    # Build invoice parameters
+    def build_invoice_params(params)
       data_hash = {
         'order_id' => params[:order_id],
         'desc' => params[:desc],
@@ -48,8 +96,7 @@ module MWallet
         'result_url' => params[:result_url]
       }.compact
 
-      # Build request params in exact order
-      request_params = {
+      {
         'cmd' => 'createInvoice',
         'version' => @version,
         'sid' => @sid,
@@ -57,61 +104,7 @@ module MWallet
         'lang' => 'ru',
         'data' => data_hash
       }
-
-      log_request('createInvoice', request_params)
-
-      # Sign and send (same approach as working raw request)
-      json_for_sign = JSON.generate(request_params)
-      hash = OpenSSL::HMAC.digest(OpenSSL::Digest.new('md5'), @password, json_for_sign).unpack1('H*')
-      request_params['hash'] = hash
-
-      response = with_retry do
-        conn = Faraday.new(url: 'https://mw-api-test.dengi.kg') do |c|
-          c.request :json
-          c.response :json, content_type: /\bjson$/
-          c.headers['Content-Type'] = 'application/json'
-        end
-        conn.post('/api/json/json.php', request_params)
-      end
-
-      handle_response(response, 'createInvoice')
     end
-
-    # Get payment status
-    def get_status(invoice_id)
-      request_params = {
-        'cmd' => 'statusPayment',
-        'version' => @version,
-        'sid' => @sid,
-        'mktime' => Time.now.to_i.to_s,
-        'lang' => 'ru',
-        'data' => { 'invoice_id' => invoice_id }
-      }
-
-      log_request('statusPayment', request_params)
-
-      json_for_sign = JSON.generate(request_params)
-      hash = OpenSSL::HMAC.digest(OpenSSL::Digest.new('md5'), @password, json_for_sign).unpack1('H*')
-      request_params['hash'] = hash
-
-      response = with_retry do
-        conn = Faraday.new(url: 'https://mw-api-test.dengi.kg') do |c|
-          c.request :json
-          c.response :json, content_type: /\bjson$/
-          c.headers['Content-Type'] = 'application/json'
-        end
-        conn.post('/api/json/json.php', request_params)
-      end
-
-      handle_response(response, 'statusPayment')
-    end
-
-    # Verify callback signature
-    def verify_callback_signature(params)
-      @signer.verify_callback(params)
-    end
-
-    private
 
     # Execute request with retry
     def with_retry
@@ -122,7 +115,7 @@ module MWallet
         retries += 1
         if retries <= @retry_count
           log_info("MWallet request failed, retrying (#{retries}/#{@retry_count})", error: e.message)
-          sleep(2 ** retries)
+          sleep(2**retries)
           retry
         end
         raise MWalletError::ProviderTimeout.new("Request failed after #{@retry_count} retries: #{e.message}")

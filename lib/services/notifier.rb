@@ -5,6 +5,9 @@
 
 require_relative '../../config/boot'
 require 'telegram/bot'
+require 'tempfile'
+require 'base64'
+require 'open-uri'
 
 module CoffeeBot
   module Services
@@ -226,12 +229,12 @@ module CoffeeBot
       end
 
       # Send QR code as image from URL
+      # @param chat_id [Integer] Telegram chat ID
+      # @param url [String] URL to QR code image
+      # @return [Boolean] True if sent successfully
       def send_qr_image_from_url(chat_id, url)
-        require 'tempfile'
-        require 'open-uri'
-
-        # Download image from URL
-        image_data = URI.open(url).read
+        # Download image from URL with timeout
+        image_data = URI.open(url, open_timeout: 5, read_timeout: 10).read
 
         # Write to temp file
         Tempfile.create(['qr', '.png']) do |file|
@@ -246,15 +249,20 @@ module CoffeeBot
             caption: "QR-код для оплаты"
           )
         end
+        true
+      rescue OpenURI::HTTPError => e
+        log_error('Failed to fetch QR image', chat_id: chat_id, url: url, error: e.message)
+        false
       rescue StandardError => e
         log_error('Failed to send QR image from URL', chat_id: chat_id, url: url, error: e.message)
+        false
       end
 
       # Send QR code as image (base64)
+      # @param chat_id [Integer] Telegram chat ID
+      # @param base64_data [String] Base64 encoded image data
+      # @return [Boolean] True if sent successfully
       def send_qr_image(chat_id, base64_data)
-        require 'tempfile'
-        require 'base64'
-
         # Decode base64 image
         image_data = Base64.decode64(base64_data)
 
@@ -270,8 +278,10 @@ module CoffeeBot
             photo: Faraday::UploadIO.new(file.path, 'image/png')
           )
         end
+        true
       rescue StandardError => e
         log_error('Failed to send QR image', chat_id: chat_id, error: e.message)
+        false
       end
 
       # Update last notified status
