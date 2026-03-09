@@ -48,11 +48,12 @@ module CoffeeBot
       # @param order [Order] The order
       def notify_order_created(order)
         text = <<~TEXT
-          ✅ Ваш заказ ##{order.id} принят!
+          ✅ Заказ ##{order.id} оформлен!
           
+          📋 Позиций: #{order.items.count}
           💰 Сумма: #{order.formatted_total}
           
-          Ожидайте счёт для оплаты.
+          📱 Ожидайте счёт для оплаты
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -76,11 +77,11 @@ module CoffeeBot
         text = <<~TEXT
           💳 Оплата заказа ##{order.id}
           
-          💰 Сумма: #{order.formatted_total}
+          💰 К оплате: #{order.formatted_total}
           
-          Отсканируйте QR-код выше или перейдите по ссылке для оплаты.
+          📱 Отсканируйте QR-код или нажмите кнопку ниже
           
-          ⏰ Ссылка действительна #{CoffeeBot::Config::ORDER_EXPIRE_MINUTES} минут.
+          ⏰ Оплатить в течение #{CoffeeBot::Config::ORDER_EXPIRE_MINUTES} минут
         TEXT
 
         # Send text with payment link
@@ -88,7 +89,7 @@ module CoffeeBot
           keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
             inline_keyboard: [
               [Telegram::Bot::Types::InlineKeyboardButton.new(
-                text: '💳 Оплатить',
+                text: '💳 Оплатить онлайн',
                 url: payment_url
               )],
               [Telegram::Bot::Types::InlineKeyboardButton.new(
@@ -109,10 +110,12 @@ module CoffeeBot
       # @param order [Order] The order
       def notify_payment_received(order)
         text = <<~TEXT
-          ✅ Оплата получена!
+          ✅ Оплата прошла успешно!
           
-          Заказ ##{order.id} передан в работу.
-          Мы уведомим вас, когда заказ будет готов.
+          📋 Заказ ##{order.id} передан в работу
+          ☕ Бариста уже начинает готовить
+          
+          🔔 Мы напишем, когда всё будет готово
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -124,9 +127,11 @@ module CoffeeBot
       # @param order [Order] The order
       def notify_order_preparing(order)
         text = <<~TEXT
-          ☕ С любовью готовим ваш заказ ##{order.id}!
+          ☕ Готовим ваш заказ ##{order.id}!
           
-          Скоро будет готов 🧡
+          ⏱ Ориентировочное время: 5-10 минут
+          
+          🔔 Скоро напишем, когда можно будет забрать
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -138,9 +143,11 @@ module CoffeeBot
       # @param order [Order] The order
       def notify_order_ready(order)
         text = <<~TEXT
-          ✅ Ваш заказ ##{order.id} готов!
+          ✅ Заказ ##{order.id} готов!
           
-          Забирайте на барной стойке 🧡
+          📍 Забирайте на барной стойке
+          
+          🧡 Приятного кофепития!
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -153,9 +160,11 @@ module CoffeeBot
       # @param reason [String] Cancellation reason
       def notify_order_cancelled(order, reason = nil)
         text = <<~TEXT
-          ❌ Заказ ##{order.id} отменён.
+          ❌ Заказ ##{order.id} отменён
           
           #{reason if reason}
+          
+          🔄 Оформите заказ заново через меню
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -166,9 +175,11 @@ module CoffeeBot
       # @param order [Order] The order
       def notify_invoice_expired(order)
         text = <<~TEXT
-          ⏰ Время оплаты заказа ##{order.id} истекло.
+          ⏰ Время оплаты истекло
           
-          Оформите заказ заново.
+          Заказ ##{order.id} отменён
+          
+          🔄 Оформите заказ заново через меню
         TEXT
 
         send_to_client(order.telegram_user_id, text)
@@ -178,10 +189,15 @@ module CoffeeBot
       #
       # @param order [Order] The order
       def notify_baristas_new_order(order)
+        wait_time = ((Time.now.utc - order.created_at) / 60).round
+        wait_indicator = wait_time > 10 ? '🔴' : (wait_time > 5 ? '⚠️' : '🟢')
+        
         text = <<~TEXT
-          🔔 Новый оплаченный заказ!
+          🔔 Новый заказ ##{order.id}!
           
           #{order.format_for_barista}
+          
+          ⏱ В очереди: #{wait_time} мин #{wait_indicator}
         TEXT
 
         keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
@@ -203,7 +219,7 @@ module CoffeeBot
       def notify_baristas_order_status(order, status)
         text = case status
         when OrderStatus::READY
-          "✅ Заказ ##{order.id} выдан клиенту"
+          "✅ Заказ ##{order.id} готов и выдан клиенту"
         when OrderStatus::CANCELLED
           "❌ Заказ ##{order.id} отменён"
         else
@@ -211,6 +227,37 @@ module CoffeeBot
         end
 
         send_to_baristas(text)
+      end
+      
+      # Suggest upsell to client after ordering coffee
+      #
+      # @param telegram_user_id [Integer] Client's Telegram ID
+      # @param dessert_item [MenuItem] Dessert item to suggest
+      def suggest_upsell(telegram_user_id, dessert_item)
+        text = <<~TEXT
+          🍰 Добавить десерт к заказу?
+          
+          #{dessert_item.name} — #{dessert_item.formatted_price}
+          
+          Отлично сочетается с кофе! ☕
+        TEXT
+
+        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+          inline_keyboard: [
+            [
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: '➕ Добавить',
+                callback_data: "upsell_add_#{dessert_item.id}"
+              ),
+              Telegram::Bot::Types::InlineKeyboardButton.new(
+                text: 'Нет, спасибо',
+                callback_data: 'upsell_skip'
+              )
+            ]
+          ]
+        )
+
+        send_to_client(telegram_user_id, text, reply_markup: keyboard)
       end
 
       private

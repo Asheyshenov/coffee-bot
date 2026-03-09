@@ -4,6 +4,7 @@
 # Dispatches incoming Telegram messages to appropriate handlers
 
 require_relative '../../config/boot'
+require_relative 'keyboards'
 require 'telegram/bot'
 
 module CoffeeBot
@@ -103,6 +104,36 @@ module CoffeeBot
           handle_skip_comment(callback)
         when 'start_order'
           handle_start_order_callback(callback)
+        # New menu navigation handlers
+        when /^menu_(coffee|desserts|tea|addons)$/
+          handle_menu_category(callback, Regexp.last_match(1))
+        when 'menu_popular'
+          handle_menu_popular(callback)
+        when 'menu_cart'
+          handle_menu_cart(callback)
+        when 'menu_orders'
+          handle_menu_orders(callback)
+        when 'menu_back'
+          handle_menu_back(callback)
+        when 'menu_main'
+          handle_menu_main(callback)
+        when /^addon_(\d+)_(\d+)$/
+          handle_addon_toggle(callback, Regexp.last_match(1).to_i, Regexp.last_match(2).to_i)
+        when /^addons_done_(\d+)$/
+          handle_addons_done(callback, Regexp.last_match(1).to_i)
+        when /^add_item_(\d+)$/
+          handle_add_item(callback, Regexp.last_match(1).to_i)
+        when /^reorder_(\d+)$/
+          handle_quick_reorder(callback, Regexp.last_match(1).to_i)
+        when /^upsell_(add|skip)_(\d+)?$/
+          handle_upsell(callback, Regexp.last_match(1), Regexp.last_match(2)&.to_i)
+        # Size selection handlers
+        when /^size_(\d+)$/
+          handle_size_menu(callback, Regexp.last_match(1).to_i)
+        when /^size_(\d+)_(small|medium|large)$/
+          handle_size_select(callback, Regexp.last_match(1).to_i, Regexp.last_match(2))
+        when /^qty_(\d+)_(small|medium|large)_(\d+)$/
+          handle_qty_with_size(callback, Regexp.last_match(1).to_i, Regexp.last_match(2), Regexp.last_match(3).to_i)
         else
           log_debug('Unknown callback', data: data)
         end
@@ -594,30 +625,12 @@ module CoffeeBot
         # Start order wizard
         Draft.clear(user_id)
 
-        # Show categories directly (not via show_categories which expects message)
-        categories = Services::MenuService.categories
-
-        if categories.empty?
-          bot.api.send_message(chat_id: user_id, text: 'Меню пока пустое.')
-          bot.api.answer_callback_query(callback_query_id: callback.id)
-          return
-        end
-
-        # Update draft step
-        Draft.update_state(user_id, 'step' => 'select_category')
-
-        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-          inline_keyboard: categories.map do |cat|
-            [Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: cat,
-              callback_data: "category_#{cat}"
-            )]
-          end
-        )
+        # Show the new main menu keyboard
+        keyboard = Bot.main_menu
 
         bot.api.send_message(
           chat_id: user_id,
-          text: '☕ Выберите категорию:',
+          text: '🏠 Главное меню:',
           reply_markup: keyboard
         )
         bot.api.answer_callback_query(callback_query_id: callback.id)
@@ -821,6 +834,373 @@ module CoffeeBot
           # Notify client
           @notifier.notify_order_ready(order)
         end
+      end
+
+      # === New Menu Navigation Handlers ===
+
+      def handle_menu_category(callback, category_key)
+        user_id = callback.from.id
+        category_map = {
+          'coffee' => 'Кофе',
+          'desserts' => 'Десерты',
+          'tea' => 'Чай',
+          'addons' => 'Добавки'
+        }
+        category = category_map[category_key]
+        
+        items = Services::MenuService.items_by_category(category)
+        
+        if items.empty?
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: "В категории '#{category}' нет товаров"
+          )
+          return
+        end
+        
+        # Update draft step
+        Draft.update_state(user_id, 'step' => 'select_item', 'category' => category)
+        
+        keyboard = Bot.category_keyboard(category, items)
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "☕ #{category}:\nВыберите товар:",
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_menu_popular(callback)
+        user_id = callback.from.id
+        popular_items = Services::MenuService.popular_items
+        
+        if popular_items.empty?
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Нет популярных товаров'
+          )
+          return
+        end
+        
+        keyboard = Bot.popular_keyboard
+        
+        text = "🔥 Популярные товары:\n\n"
+        popular_items.each_with_index do |item, idx|
+          text += "#{idx + 1}. #{item.name} — #{item.formatted_price}\n"
+        end
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: text,
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_menu_cart(callback)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        if draft.nil? || draft.items.empty?
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Корзина пуста'
+          )
+          return
+        end
+        
+        keyboard = Bot.cart_keyboard
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "🛒 Ваша корзина:\n\n#{draft.format_cart}\n\n💰 Итого: #{draft.formatted_total}",
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_menu_orders(callback)
+        user_id = callback.from.id
+        orders = Services::OrderService.client_orders(user_id, limit: 5)
+        
+        if orders.empty?
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'У вас пока нет заказов'
+          )
+          return
+        end
+        
+        text = "📦 Ваши последние заказы:\n\n"
+        orders.each do |order|
+          text += "##{order.id} — #{order.display_status} — #{order.formatted_total}\n"
+          text += "   📅 #{order.created_at.strftime('%d.%m %H:%M')}\n\n"
+        end
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: text
+        )
+      end
+
+      def handle_menu_back(callback)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        if draft && draft.current_step
+          # Go back to previous step based on current state
+          case draft.current_step
+          when 'select_item'
+            # Go back to main menu
+            handle_menu_main(callback)
+          when 'select_category'
+            handle_menu_main(callback)
+          else
+            handle_menu_main(callback)
+          end
+        else
+          handle_menu_main(callback)
+        end
+      end
+
+      def handle_menu_main(callback)
+        user_id = callback.from.id
+        
+        keyboard = Bot.main_menu
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: '🏠 Главное меню:',
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_addon_toggle(callback, item_id, addon_id)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        unless draft
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Начните заказ сначала'
+          )
+          return
+        end
+        
+        # Toggle addon in draft
+        selected_addons = draft.state['selected_addons'] || []
+        if selected_addons.include?(addon_id)
+          selected_addons.delete(addon_id)
+        else
+          selected_addons << addon_id
+        end
+        
+        Draft.update_state(user_id, 'selected_addons' => selected_addons)
+        
+        # Refresh keyboard
+        keyboard = Bot.addons_keyboard(item_id, selected_addons)
+        
+        bot.api.edit_message_reply_markup(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_addons_done(callback, item_id)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        unless draft
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Начните заказ сначала'
+          )
+          return
+        end
+        
+        # Proceed to quantity selection with selected addons
+        selected_addons = draft.state['selected_addons'] || []
+        
+        # Store addons for this item
+        Draft.update_state(user_id, 'addons_for_item' => { item_id => selected_addons })
+        
+        # Show quantity keyboard
+        keyboard = Bot.quantity_keyboard(item_id)
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: '🔢 Выберите количество:',
+          reply_markup: keyboard
+        )
+      end
+
+      def handle_add_item(callback, item_id)
+        user_id = callback.from.id
+        item = Services::MenuService.find_item(item_id)
+        
+        unless item
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Товар не найден'
+          )
+          return
+        end
+        
+        # Initialize draft if needed
+        draft = Draft.get_or_create(user_id)
+        Draft.update_state(user_id, 'step' => 'select_item', 'current_item_id' => item_id)
+        
+        # If item has sizes, show size selection first
+        if item.has_sizes?
+          handle_size_menu(callback, item_id)
+        else
+          # Show quantity selection directly for items without sizes
+          keyboard = Bot.quantity_keyboard(item_id, nil)
+          
+          bot.api.edit_message_text(
+            chat_id: user_id,
+            message_id: callback.message.message_id,
+            text: "#{item.name} — #{item.formatted_price}\n\n🔢 Выберите количество:",
+            reply_markup: keyboard
+          )
+        end
+      end
+
+      def handle_quick_reorder(callback, order_id)
+        user_id = callback.from.id
+        order = Order[order_id]
+        
+        unless order && order.telegram_user_id == user_id
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Заказ не найден'
+          )
+          return
+        end
+        
+        # Create new draft from order items
+        Draft.clear(user_id)
+        draft = Draft.get_or_create(user_id)
+        
+        order.items.each do |order_item|
+          menu_item = MenuItem[order_item.menu_item_id]
+          draft.add_item(menu_item, order_item.quantity) if menu_item
+        end
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "🔄 Заказ повторён!\n\n#{draft.format_cart}\n\n💰 Итого: #{draft.formatted_total}",
+          reply_markup: Bot.cart_keyboard
+        )
+      end
+
+      def handle_upsell(callback, action, item_id)
+        user_id = callback.from.id
+        
+        if action == 'add' && item_id
+          # Add upsell item to cart
+          draft = Draft.for_user(user_id)
+          if draft
+            menu_item = MenuItem[item_id]
+            draft.add_item(menu_item, 1) if menu_item
+          end
+        end
+        
+        # Proceed to checkout
+        handle_cart_action(callback, 'checkout')
+      end
+
+      # === Size Selection Handlers ===
+
+      # Show size selection menu for drinks
+      def handle_size_menu(callback, item_id)
+        user_id = callback.from.id
+        item = MenuItem[item_id]
+        
+        unless item
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Товар не найден'
+          )
+          return
+        end
+        
+        unless item.has_sizes?
+          # Item doesn't have sizes, go directly to quantity selection
+          handle_item_select(callback, item_id)
+          return
+        end
+        
+        keyboard = Bot.size_keyboard(item)
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "☕ #{item.name}\n\n#{item.formatted_prices}\n\nВыберите размер:",
+          reply_markup: keyboard
+        )
+      end
+
+      # Handle size selection - show quantity selector
+      def handle_size_select(callback, item_id, size)
+        user_id = callback.from.id
+        item = MenuItem[item_id]
+        
+        unless item
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Товар не найден'
+          )
+          return
+        end
+        
+        # Store selected size in draft state
+        Draft.update_state(user_id, 'current_item_id' => item_id, 'current_size' => size)
+        
+        keyboard = Bot.quantity_keyboard(item_id, size)
+        
+        size_label = MenuItem::SIZE_LABELS[size]
+        price = item.formatted_price_for_size(size)
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "☕ #{item.name} (#{size_label}) — #{price}\n\nВыберите количество:",
+          reply_markup: keyboard
+        )
+      end
+
+      # Handle quantity selection with size
+      def handle_qty_with_size(callback, item_id, size, qty)
+        user_id = callback.from.id
+        item = MenuItem[item_id]
+        
+        unless item
+          bot.api.answer_callback_query(
+            callback_query_id: callback.id,
+            text: 'Товар не найден'
+          )
+          return
+        end
+        
+        # Add item with size to cart
+        draft = Draft.get_or_create(user_id)
+        draft.add_item_with_size(item, size, qty)
+        
+        size_label = MenuItem::SIZE_LABELS[size]
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: "✅ Добавлено: #{item.name} (#{size_label}) x#{qty}\n\n#{draft.format_cart}",
+          reply_markup: Bot.cart_keyboard
+        )
       end
 
       # === Helpers ===

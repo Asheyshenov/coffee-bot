@@ -11,6 +11,16 @@ ENV['DATABASE_URL'] = 'sqlite::memory:'
 
 require_relative '../config/boot'
 
+# Load Sequel migration extension
+Sequel.extension :migration
+
+# Run migrations BEFORE loading models
+CoffeeBot::DB.run_migrations!
+
+# Load all models
+Dir[File.expand_path('../lib/models/*.rb', __dir__)].sort.each { |f| require f }
+Dir[File.expand_path('../lib/services/**/*.rb', __dir__)].sort.each { |f| require f }
+
 # Configure DatabaseCleaner
 require 'database_cleaner/sequel'
 
@@ -25,12 +35,6 @@ RSpec.configure do |config|
 
   config.expect_with :rspec do |c|
     c.syntax = :expect
-  end
-
-  # Database cleaning
-  config.before(:suite) do
-    # Run migrations on in-memory database
-    Sequel::Migrator.run(DB, File.expand_path('../db/migrations', __dir__))
   end
 
   config.before(:each) do
@@ -56,13 +60,15 @@ module TestHelpers
     )
   end
 
-  def create_test_menu_item(category: 'Кофе', name: 'Тест', price: 10_000)
+  def create_test_menu_item(category: 'Кофе', name: 'Тест', price: 10_000, sizes: nil, default_size: 'medium')
     MenuItem.create(
       category: category,
       name: name,
       price: price,
       currency: 'KGS',
-      is_available: true
+      is_available: true,
+      sizes: sizes,
+      default_size: default_size
     )
   end
 

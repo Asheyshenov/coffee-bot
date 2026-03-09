@@ -12,7 +12,7 @@ Sequel.migration do
       foreign_key :order_id, :orders, on_delete: :cascade, null: false
       
       # QRPay identifiers
-      String :invoice_id_provider, index: true
+      String :invoice_id_provider
       String :payment_id_provider  # Payment ID from QRPay after successful payment
       
       # Payment details

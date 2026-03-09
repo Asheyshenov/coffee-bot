@@ -165,7 +165,7 @@ RSpec.describe 'Integration tests' do
       draft.add_item(item2, 1) # 16_000
 
       expect(draft.total_amount).to eq(46_000)
-      expect(draft.formatted_total).to eq('460.00 KGS')
+      expect(draft.formatted_total).to eq('460 KGS')
     end
   end
 end

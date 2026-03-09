@@ -28,6 +28,17 @@ module CoffeeBot
         
         @connection
       end
+      
+      # Run migrations (for test environment)
+      def run_migrations!
+        migrations_dir = File.expand_path('../db/migrations', __dir__)
+        return unless Dir.exist?(migrations_dir)
+        
+        require 'sequel/extensions/migration'
+        Sequel.extension :migration
+        
+        Sequel::Migrator.run(@connection, migrations_dir, use_transactions: true)
+      end
 
       private
 
@@ -55,6 +66,7 @@ module CoffeeBot
         return unless Dir.exist?(migrations_dir)
         
         require 'sequel/extensions/migration'
+        Sequel.extension :migration
         
         log_info('Running database migrations...')
         

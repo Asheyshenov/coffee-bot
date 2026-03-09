@@ -276,9 +276,8 @@ class Order < Sequel::Model
     lines << 'Позиции:'
     
     order_items.each do |item|
-      price_kgs = item.unit_price.to_f / 100
-      total_kgs = item.line_total.to_f / 100
-      lines << "  • #{item.item_name} x#{item.qty} = #{'%.2f' % total_kgs} KGS"
+      total_kgs = item.line_total.to_i / 100
+      lines << "  • #{item.item_name} x#{item.qty} = #{total_kgs} KGS"
     end
     
     lines << ''
@@ -320,8 +319,8 @@ class Order < Sequel::Model
 
   # Format total for display
   def formatted_total
-    kgs = total_amount.to_f / 100
-    format('%.2f KGS', kgs)
+    kgs = total_amount.to_i / 100
+    format('%d KGS', kgs)
   end
 
   # Display status

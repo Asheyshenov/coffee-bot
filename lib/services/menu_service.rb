@@ -51,7 +51,9 @@ module CoffeeBot
           name: params[:name],
           price: params[:price], # Should be in tyiyn
           currency: params[:currency] || 'KGS',
-          is_available: params[:is_available] != false
+          is_available: params[:is_available] != false,
+          sizes: params[:sizes],
+          default_size: params[:default_size]
         )
       end
 
@@ -158,19 +160,83 @@ module CoffeeBot
         return if MenuItem.count > 0
 
         items = [
-          { category: 'Кофе', name: 'Эспрессо', price: 8000 },
-          { category: 'Кофе', name: 'Американо', price: 10000 },
-          { category: 'Кофе', name: 'Капучино', price: 15000 },
-          { category: 'Кофе', name: 'Латте', price: 16000 },
-          { category: 'Кофе', name: 'Раф', price: 18000 },
-          { category: 'Кофе', name: 'Флэт Уайт', price: 17000 },
-          { category: 'Чай', name: 'Чёрный чай', price: 8000 },
-          { category: 'Чай', name: 'Зелёный чай', price: 8000 },
-          { category: 'Чай', name: 'Чай с молоком', price: 10000 },
-          { category: 'Чай', name: 'Матча латте', price: 18000 },
+          # Coffee with sizes
+          {
+            category: 'Кофе',
+            name: 'Эспрессо',
+            price: 8000,
+            sizes: { 'small' => 8000, 'medium' => 10000, 'large' => 12000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Кофе',
+            name: 'Американо',
+            price: 10000,
+            sizes: { 'small' => 10000, 'medium' => 12000, 'large' => 15000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Кофе',
+            name: 'Капучино',
+            price: 15000,
+            sizes: { 'small' => 13000, 'medium' => 15000, 'large' => 18000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Кофе',
+            name: 'Латте',
+            price: 16000,
+            sizes: { 'small' => 14000, 'medium' => 16000, 'large' => 19000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Кофе',
+            name: 'Раф',
+            price: 18000,
+            sizes: { 'small' => 16000, 'medium' => 18000, 'large' => 22000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Кофе',
+            name: 'Флэт Уайт',
+            price: 17000,
+            sizes: { 'small' => 15000, 'medium' => 17000, 'large' => 20000 },
+            default_size: 'medium'
+          },
+          # Tea with sizes
+          {
+            category: 'Чай',
+            name: 'Чёрный чай',
+            price: 8000,
+            sizes: { 'small' => 6000, 'medium' => 8000, 'large' => 10000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Чай',
+            name: 'Зелёный чай',
+            price: 8000,
+            sizes: { 'small' => 6000, 'medium' => 8000, 'large' => 10000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Чай',
+            name: 'Чай с молоком',
+            price: 10000,
+            sizes: { 'small' => 9000, 'medium' => 10000, 'large' => 12000 },
+            default_size: 'medium'
+          },
+          {
+            category: 'Чай',
+            name: 'Матча латте',
+            price: 18000,
+            sizes: { 'small' => 16000, 'medium' => 18000, 'large' => 22000 },
+            default_size: 'medium'
+          },
+          # Desserts without sizes
           { category: 'Десерты', name: 'Круассан', price: 12000 },
           { category: 'Десерты', name: 'Маффин', price: 10000 },
           { category: 'Десерты', name: 'Чизкейк', price: 20000 },
+          # Addons without sizes
           { category: 'Добавки', name: 'Сироп', price: 2000 },
           { category: 'Добавки', name: 'Молоко', price: 3000 },
           { category: 'Добавки', name: 'Взбитые сливки', price: 5000 }
@@ -181,6 +247,28 @@ module CoffeeBot
         end
 
         log_info('Menu seeded', count: items.length)
+      end
+
+      # Get popular items (most ordered)
+      #
+      # @return [Array<MenuItem>] List of popular items
+      def self.popular_items
+        # Join with order_items to get order count, ordered by popularity
+        MenuItem
+          .select(:menu_items__id, :menu_items__name, :menu_items__category, :menu_items__price, :menu_items__is_available,
+                  Sequel.function(:count, :order_items__id).as(:order_count))
+          .left_join(:order_items, menu_item_id: :id)
+          .group_by(:menu_items__id)
+          .order(Sequel.desc(:order_count))
+          .limit(5)
+          .all
+      end
+
+      # Get all available addons
+      #
+      # @return [Array<MenuItem>] List of addon items
+      def self.addons
+        MenuItem.where(category: 'Добавки', is_available: true).all
       end
     end
   end

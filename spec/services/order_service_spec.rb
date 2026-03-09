@@ -21,7 +21,7 @@ RSpec.describe 'Order calculations and lifecycle' do
     it 'formats total in KGS' do
       order = create_test_order(create_test_client, amount: 15_000)
       
-      expect(order.formatted_total).to eq('150.00 KGS')
+      expect(order.formatted_total).to eq('150 KGS')
     end
   end
 

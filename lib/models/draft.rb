@@ -98,12 +98,31 @@ class Draft < Sequel::Model
     state['items'] || []
   end
 
-  # Add item to cart
+  # Add item to cart (without size - for backward compatibility)
   def add_item(menu_item, qty)
+    add_item_with_size(menu_item, nil, qty)
+  end
+
+  # Add item to cart with size support
+  # @param menu_item [MenuItem] The menu item
+  # @param size [String, nil] Size key (small, medium, large) or nil
+  # @param qty [Integer] Quantity
+  def add_item_with_size(menu_item, size, qty)
     current_items = items
+    unit_price = menu_item.price_for_size(size)
     
-    # Check if item already exists in cart
-    existing = current_items.find { |i| i['menu_item_id'] == menu_item.id }
+    # Build display name with size if applicable
+    display_name = if size && menu_item.has_sizes?
+      size_label = MenuItem::SIZE_LABELS[size] || size.upcase
+      "#{menu_item.name} (#{size_label})"
+    else
+      menu_item.name
+    end
+    
+    # Check if item with same size already exists in cart
+    existing = current_items.find do |i|
+      i['menu_item_id'] == menu_item.id && i['size'] == size
+    end
     
     if existing
       existing['qty'] += qty
@@ -112,9 +131,11 @@ class Draft < Sequel::Model
       current_items << {
         'menu_item_id' => menu_item.id,
         'name' => menu_item.name,
-        'unit_price' => menu_item.price,
+        'size' => size,
+        'display_name' => display_name,
+        'unit_price' => unit_price,
         'qty' => qty,
-        'line_total' => menu_item.price * qty
+        'line_total' => unit_price * qty
       }
     end
     
@@ -145,8 +166,8 @@ class Draft < Sequel::Model
 
   # Format total for display
   def formatted_total
-    kgs = total_amount.to_f / 100
-    format('%.2f KGS', kgs)
+    kgs = total_amount.to_i / 100
+    format('%d KGS', kgs)
   end
 
   # Get comment
@@ -179,9 +200,11 @@ class Draft < Sequel::Model
     return 'Корзина пуста' if empty?
 
     lines = items.each_with_index.map do |item, idx|
-      price_kgs = item['unit_price'].to_f / 100
-      total_kgs = item['line_total'].to_f / 100
-      "#{idx + 1}. #{item['name']} x#{item['qty']} @ #{'%.2f' % price_kgs} = #{'%.2f' % total_kgs} KGS"
+      price_kgs = item['unit_price'].to_i / 100
+      total_kgs = item['line_total'].to_i / 100
+      # Use display_name which includes size if present
+      display = item['display_name'] || item['name']
+      "#{idx + 1}. #{display} x#{item['qty']} @ #{price_kgs} = #{total_kgs} KGS"
     end
     
     lines << ''
