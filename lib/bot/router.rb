@@ -350,10 +350,18 @@ module CoffeeBot
         # Update draft
         Draft.update_state(user_id, 'step' => 'select_item', 'category' => category)
 
+        # Build keyboard with size-aware pricing
         keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
           inline_keyboard: items.map do |item|
+            # Show "от X KGS" for items with sizes, regular price otherwise
+            price_text = if item.has_sizes?
+              "от #{item.formatted_price_for_size('small')}"
+            else
+              item.formatted_price
+            end
+            
             [Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: "#{item.name} - #{item.formatted_price}",
+              text: "#{item.name} — #{price_text}",
               callback_data: "item_#{item.id}"
             )]
           end + [[Telegram::Bot::Types::InlineKeyboardButton.new(
@@ -365,7 +373,7 @@ module CoffeeBot
         bot.api.edit_message_text(
           chat_id: user_id,
           message_id: callback.message.message_id,
-          text: "☕ #{category}:\nВыберите напиток:",
+          text: "☕ #{category}:\nВыберите товар:",
           reply_markup: keyboard
         )
       end
@@ -376,6 +384,12 @@ module CoffeeBot
 
         unless item
           bot.api.send_message(chat_id: user_id, text: 'Товар не найден.')
+          return
+        end
+
+        # If item has sizes, show size selector first
+        if item.has_sizes?
+          handle_size_menu(callback, item_id)
           return
         end
 
@@ -841,13 +855,12 @@ module CoffeeBot
       def handle_menu_category(callback, category_key)
         user_id = callback.from.id
         category_map = {
-          'coffee' => 'Кофе',
-          'desserts' => 'Десерты',
-          'tea' => 'Чай',
-          'addons' => 'Добавки'
+          'coffee' => '☕ Кофе',
+          'desserts' => '🍰 Десерты',
+          'tea' => '🍵 Чай',
+          'addons' => '➕ Добавки'
         }
         category = category_map[category_key]
-        
         items = Services::MenuService.items_by_category(category)
         
         if items.empty?
