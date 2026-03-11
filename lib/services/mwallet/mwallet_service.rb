@@ -69,14 +69,17 @@ module MWallet
     def get_payment_status(order)
       response = client.get_status(order.invoice_id_provider)
 
+      # Extract status from response
+      # MWallet statusPayment returns status in data.status (string: "wait", "success", "cancel")
+      payment_status = response.dig('data', 'status') || response.dig(:data, :status)
+
       # Map status to internal format
-      provider_status = response.dig('data', 'status') || response.dig(:data, :status)
-      internal_status = StatusMapper.map_from_provider(provider_status)
+      internal_status = StatusMapper.map_from_provider(payment_status)
 
       {
-        provider_status: provider_status,
+        provider_status: payment_status,
         internal_status: internal_status,
-        paid_amount: response.dig('data', 'amount') || response.dig(:data, :amount),
+        paid_amount: nil,  # statusPayment doesn't return amount
         raw_response: response
       }
     end

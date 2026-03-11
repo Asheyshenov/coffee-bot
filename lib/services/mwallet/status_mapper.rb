@@ -16,9 +16,22 @@ module MWallet
 
     # Map mwallet status to internal status symbol
     #
-    # @param status [Integer, String] MWallet status code
+    # @param status [Integer, String] MWallet status code (numeric or string)
     # @return [Symbol] Internal status symbol
     def self.map_from_provider(status)
+      # Handle string status values from statusPayment API
+      if status.is_a?(String)
+        case status.downcase
+        when 'success'
+          return :paid
+        when 'cancel', 'cancelled'
+          return :cancelled
+        when 'wait', 'pending'
+          return :pending
+        end
+      end
+
+      # Handle numeric status codes
       code = status.to_i
 
       case code
