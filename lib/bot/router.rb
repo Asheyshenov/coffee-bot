@@ -53,8 +53,6 @@ module CoffeeBot
         case text
         when '/start'
           handle_start(message)
-        when '/menu', '📋 Меню'
-          handle_menu(message)
         when '/order', '🛒 Сделать предзаказ'
           handle_order_start(message)
         when '/my_orders', '📦 Мои заказы'
@@ -170,25 +168,6 @@ module CoffeeBot
         )
       end
 
-      def handle_menu(message)
-        user_id = message.from.id
-        menu_text = Services::MenuService.format_menu
-
-        # Add "Make preorder" button under menu
-        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-          inline_keyboard: [
-            [Telegram::Bot::Types::InlineKeyboardButton.new(text: '🛒 Сделать предзаказ', callback_data: 'start_order')]
-          ]
-        )
-
-        bot.api.send_message(
-          chat_id: user_id,
-          text: menu_text,
-          parse_mode: 'HTML',
-          reply_markup: keyboard
-        )
-      end
-
       def handle_order_start(message)
         user_id = message.from.id
 
@@ -259,7 +238,6 @@ module CoffeeBot
           📖 Справка по командам:
           
           /start - Начать работу с ботом
-          /menu - Посмотреть меню
           /order - Сделать заказ
           /my_orders - Мои заказы
           /cancel - Отменить текущий заказ
@@ -703,10 +681,6 @@ module CoffeeBot
             [Telegram::Bot::Types::InlineKeyboardButton.new(
               text: '☕ В работе',
               callback_data: 'barista_in_progress'
-            )],
-            [Telegram::Bot::Types::InlineKeyboardButton.new(
-              text: '📝 Меню',
-              callback_data: 'barista_menu'
             )]
           ]
         )
@@ -737,8 +711,6 @@ module CoffeeBot
           show_barista_queue(callback)
         when 'in_progress'
           show_barista_in_progress(callback)
-        when 'menu'
-          handle_menu(callback)
         end
       end
 
@@ -1221,7 +1193,7 @@ module CoffeeBot
       def main_keyboard
         Telegram::Bot::Types::ReplyKeyboardMarkup.new(
           keyboard: [
-            [{ text: '📋 Меню' }, { text: '🛒 Сделать предзаказ' }],
+            [{ text: '🛒 Сделать предзаказ' }],
             [{ text: '📦 Мои заказы' }, { text: '❓ Помощь' }]
           ],
           resize_keyboard: true,
