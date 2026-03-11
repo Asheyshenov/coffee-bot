@@ -86,8 +86,10 @@ module CoffeeBot
           handle_item_select(callback, Regexp.last_match(1).to_i)
         when /^qty_(\d+)_(\d+)$/
           handle_qty_select(callback, Regexp.last_match(1).to_i, Regexp.last_match(2).to_i)
-        when /^cart_(add|checkout|clear|back)$/
+        when /^cart_(add|checkout|clear|back|edit)$/
           handle_cart_action(callback, Regexp.last_match(1))
+        when /^cart_remove_(\d+)$/
+          handle_cart_remove(callback, Regexp.last_match(1).to_i)
         when /^confirm_(yes|no)$/
           handle_confirm(callback, Regexp.last_match(1))
         when /^check_payment_(\d+)$/
@@ -132,6 +134,9 @@ module CoffeeBot
           handle_size_select(callback, Regexp.last_match(1).to_i, Regexp.last_match(2))
         when /^qty_(\d+)_(small|medium|large)_(\d+)$/
           handle_qty_with_size(callback, Regexp.last_match(1).to_i, Regexp.last_match(2), Regexp.last_match(3).to_i)
+        # Pre-order handler
+        when 'preorder_start'
+          handle_preorder_start(callback)
         else
           log_debug('Unknown callback', data: data)
         end
@@ -171,12 +176,26 @@ module CoffeeBot
       def handle_order_start(message)
         user_id = message.from.id
 
-        # Check if user has active order
-        active = Services::OrderService.active_order_for_client(user_id)
-        if active
+        # Clear any existing draft first (user wants to make a new order)
+        Draft.clear(user_id)
+
+        # Check if user has active orders
+        active_orders = Services::OrderService.active_orders_for_client(user_id)
+        unless active_orders.empty?
+          # Show message with pre-order button
+          orders_list = active_orders.map do |order|
+            items_summary = order.format_short_summary
+            "##{order.id} (#{items_summary})"
+          end.join("\n")
+          
+          text = "У вас уже есть активные заказы:\n#{orders_list}\n\nПожалуйста, дождитесь их завершения или оформите новый предзаказ."
+          
+          keyboard = Bot.preorder_keyboard
+          
           bot.api.send_message(
             chat_id: user_id,
-            text: "У вас уже есть активный заказ ##{active.id}. Дождитесь его завершения."
+            text: text,
+            reply_markup: keyboard
           )
           return
         end
@@ -184,6 +203,24 @@ module CoffeeBot
         # Start order wizard
         Draft.clear(user_id)
         show_categories(message)
+      end
+
+      # Handle pre-order start (when user has active order but wants to make another)
+      def handle_preorder_start(callback)
+        user_id = callback.from.id
+
+        # Start order wizard for pre-order
+        Draft.clear(user_id)
+        
+        # Show the main menu keyboard
+        keyboard = Bot.main_menu
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: '🛒 Предзаказ: выберите категорию:',
+          reply_markup: keyboard
+        )
       end
 
       def handle_my_orders(message)
@@ -221,13 +258,49 @@ module CoffeeBot
 
       def handle_cancel(message)
         user_id = message.from.id
+        cancelled_orders = []
+        failed_cancellations = []
+
+        # Find and cancel active orders
+        active_orders = Services::OrderService.active_orders_for_client(user_id)
+        mwallet_service = MWallet::Service.new
+        
+        active_orders.each do |order|
+          if order.invoice_id_provider && order.status == OrderStatus::INVOICE_CREATED
+            # Try to cancel via API
+            begin
+              mwallet_service.cancel_invoice_for_order(order)
+              cancelled_orders << order.id
+            rescue => e
+              log_error("Failed to cancel order #{order.id}", error: e.message)
+              # Still mark as cancelled locally
+              order.update(status: OrderStatus::CANCELLED)
+              failed_cancellations << order.id
+            end
+          else
+            # Order without invoice - just mark as cancelled
+            order.update(status: OrderStatus::CANCELLED)
+            cancelled_orders << order.id
+          end
+        end
 
         # Clear draft
         Draft.clear(user_id)
 
+        # Build response message
+        if cancelled_orders.empty? && failed_cancellations.empty?
+          text = '❌ Корзина очищена. Нет активных заказов для отмены.'
+        else
+          parts = []
+          parts << "❌ Отменено заказов: #{cancelled_orders.length}" if cancelled_orders.any?
+          parts << "⚠️ Не удалось отменить через API: #{failed_cancellations.join(', ')}" if failed_cancellations.any?
+          parts << "\nНачните заново с /order"
+          text = parts.join("\n")
+        end
+
         bot.api.send_message(
           chat_id: user_id,
-          text: '❌ Заказ отменён. Начните заново с /order'
+          text: text
         )
       end
 
@@ -481,6 +554,62 @@ module CoffeeBot
           end
         when 'back'
           show_categories(callback)
+        when 'edit'
+          # Show cart items with remove buttons
+          handle_cart_edit(callback)
+        end
+      end
+
+      # Show cart items with remove buttons
+      def handle_cart_edit(callback)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        if draft.nil? || draft.items.empty?
+          bot.api.edit_message_text(
+            chat_id: user_id,
+            message_id: callback.message.message_id,
+            text: '🛒 Корзина пуста'
+          )
+          return
+        end
+        
+        keyboard = Bot.cart_edit_keyboard(draft)
+        
+        text = "✏ Редактирование корзины:\n\nНажмите на товар, чтобы удалить его."
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: text,
+          reply_markup: keyboard
+        )
+      end
+
+      # Remove item from cart by index
+      def handle_cart_remove(callback, index)
+        user_id = callback.from.id
+        draft = Draft.for_user(user_id)
+        
+        if draft && draft.items.length > index
+          removed_item = draft.items[index]
+          draft.remove_item(index)
+          
+          if draft.items.empty?
+            bot.api.edit_message_text(
+              chat_id: user_id,
+              message_id: callback.message.message_id,
+              text: "🗑 Удалено: #{removed_item['display_name']}\n\nКорзина теперь пуста."
+            )
+          else
+            keyboard = Bot.cart_edit_keyboard(draft)
+            bot.api.edit_message_text(
+              chat_id: user_id,
+              message_id: callback.message.message_id,
+              text: "🗑 Удалено: #{removed_item['display_name']}\n\nПродолжайте редактирование или нажмите 'Назад'.",
+              reply_markup: keyboard
+            )
+          end
         end
       end
 
@@ -888,9 +1017,11 @@ module CoffeeBot
         draft = Draft.for_user(user_id)
         
         if draft.nil? || draft.items.empty?
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Корзина пуста'
+          # Show empty cart message in the chat (not just toast)
+          bot.api.edit_message_text(
+            chat_id: user_id,
+            message_id: callback.message.message_id,
+            text: '🛒 Корзина пуста\n\nДобавьте товары из меню.'
           )
           return
         end

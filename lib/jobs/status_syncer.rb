@@ -2,6 +2,7 @@
 
 # Status Syncer Job
 # Periodically syncs order status with payment provider (fallback for callbacks)
+# Polls every 2 seconds for faster payment confirmation
 
 require_relative '../../config/boot'
 
@@ -10,7 +11,7 @@ module CoffeeBot
     class StatusSyncer
       attr_reader :interval_seconds
 
-      def initialize(interval_seconds: 300) # Default 5 minutes
+      def initialize(interval_seconds: 2) # Default 2 seconds for faster payment confirmation
         @interval_seconds = interval_seconds
         @running = false
       end
@@ -19,7 +20,7 @@ module CoffeeBot
       def start
         return if @running
 
-        @running = false
+        @running = true
         log_info('StatusSyncer started', interval: @interval_seconds)
 
         Thread.new do
@@ -48,7 +49,7 @@ module CoffeeBot
 
         return 0 if orders.empty?
 
-        log_info('Syncing order statuses', count: orders.length)
+        log_debug('Syncing order statuses', count: orders.length)
 
         synced_count = 0
         orders.each do |order|
@@ -72,7 +73,6 @@ module CoffeeBot
         # Orders with INVOICE_CREATED status that haven't expired
         Order.where(status: OrderStatus::INVOICE_CREATED)
              .where(Sequel.lit('created_at > ?', Time.now.utc - (CoffeeBot::Config::ORDER_EXPIRE_MINUTES * 60)))
-             .where(Sequel.lit('updated_at < ?', Time.now.utc - 60)) # Not updated in last minute
              .limit(50)
              .all
       end

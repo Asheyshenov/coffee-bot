@@ -55,6 +55,14 @@ module CoffeeBot
         Order.where(telegram_user_id: telegram_user_id, status: OrderStatus::ACTIVE).first
       end
 
+      # Get all active orders for client
+      #
+      # @param telegram_user_id [Integer] Telegram user ID
+      # @return [Array<Order>] List of active orders
+      def self.active_orders_for_client(telegram_user_id)
+        Order.where(telegram_user_id: telegram_user_id, status: OrderStatus::ACTIVE).all
+      end
+
       # Get queue for barista (PAID orders)
       #
       # @return [Array<Order>] List of orders in queue

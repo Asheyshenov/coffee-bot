@@ -114,6 +114,30 @@ module MWallet
       end
 
       false
+      end
+
+    # Cancel invoice for order
+    # Calls InvoiceCancel API and updates order status
+    #
+    # @param order [Order] The order to cancel
+    # @return [Boolean] True if cancelled successfully
+    def cancel_invoice_for_order(order)
+      return false unless order.invoice_id_provider
+      return false unless [OrderStatus::INVOICE_CREATED, OrderStatus::NEW].include?(order.status)
+
+      begin
+        response = client.cancel_invoice(order.invoice_id_provider)
+        log_info('Invoice cancelled via API', order_id: order.id, invoice_id: order.invoice_id_provider)
+        
+        # Update order status
+        order.update(status: OrderStatus::CANCELLED)
+        true
+      rescue MWalletError::Base => e
+        log_error('Failed to cancel invoice', order_id: order.id, error: e.message)
+        # Still cancel the order locally even if API fails
+        order.update(status: OrderStatus::CANCELLED)
+        false
+      end
     end
 
     # Process callback from mwallet

@@ -327,6 +327,14 @@ class Order < Sequel::Model
   def display_status
     OrderStatus.display_name(status)
   end
+
+  # Format short summary for active order notification
+  # Returns something like "Капучино L x2, Чизкейк x1"
+  def format_short_summary
+    order_items.map do |item|
+      "#{item.item_name} x#{item.qty}"
+    end.join(', ')
+  end
 end
 
 # Custom exception for invalid status transitions

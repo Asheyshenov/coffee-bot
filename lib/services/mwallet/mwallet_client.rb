@@ -56,6 +56,27 @@ module MWallet
       handle_response(response, 'statusPayment')
     end
 
+    # Cancel invoice
+    # @param invoice_id [String] The provider invoice ID to cancel
+    # @return [Hash] Response from the API
+    def cancel_invoice(invoice_id)
+      request_params = {
+        'cmd' => 'InvoiceCancel',
+        'version' => @version,
+        'sid' => @sid,
+        'mktime' => Time.now.to_i.to_s,
+        'lang' => 'ru',
+        'data' => { 'invoice_id' => invoice_id }
+      }
+
+      log_request('InvoiceCancel', request_params)
+
+      signed_params = @signer.build_signed_request(request_params)
+      response = with_retry { @connection.post('/api/json/json.php', signed_params) }
+
+      handle_response(response, 'InvoiceCancel')
+    end
+
     # Verify callback signature
     def verify_callback_signature(params)
       @signer.verify_callback(params)
