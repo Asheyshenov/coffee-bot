@@ -144,7 +144,7 @@ module MWallet
     #
     # @param params [Hash] Callback parameters
     # @param raw_body [String] Raw request body
-    # @return [Boolean] True if processed successfully
+    # @return [Hash] Result with :success, :order_id, and :notify_barista flags
     def process_callback(params, raw_body)
       # Log callback
       callback_log = CallbackLog.log_callback(
@@ -170,7 +170,7 @@ module MWallet
         if CallbackLog.duplicate?(params['invoice_id'], params['invoice_id'], raw_body)
           log_info('Duplicate callback detected, skipping', invoice_id: params['invoice_id'])
           callback_log.mark_processed!
-          return true
+          return { success: true, order_id: nil, notify_barista: false }
         end
 
         # Find order by invoice ID
@@ -180,12 +180,14 @@ module MWallet
         unless order
           log_error('Order not found for callback', invoice_id: invoice_id)
           callback_log.mark_failed!('Order not found')
-          return true # Return true to acknowledge receipt
+          return { success: true, order_id: nil, notify_barista: false } # Return success to acknowledge receipt
         end
 
         # Process payment status
         provider_status = params['status'] || params[:status]
         internal_status = StatusMapper.map_from_provider(provider_status)
+
+        notify_barista = false
 
         if internal_status == :paid && order.status == OrderStatus::INVOICE_CREATED
           order.mark_paid!(
@@ -193,10 +195,11 @@ module MWallet
             paid_at: Time.now.utc
           )
           log_info('Order marked as paid via callback', order_id: order.id)
+          notify_barista = true
         end
 
         callback_log.mark_processed!
-        true
+        { success: true, order_id: order.id, notify_barista: notify_barista }
       end
     end
 

@@ -5,6 +5,7 @@
 
 require 'sinatra/base'
 require 'json'
+require 'telegram/bot'
 
 module CoffeeBot
   module HTTP
@@ -41,7 +42,12 @@ module CoffeeBot
           params = parse_callback_data(raw_body, request.content_type)
 
           # Process callback (signature verification inside service)
-          Services::OrderService.process_payment_callback(params, raw_body)
+          result = Services::OrderService.process_payment_callback(params, raw_body)
+
+          # Send barista notification if payment was successful
+          if result[:notify_barista] && result[:order_id]
+            notify_baristas_async(result[:order_id])
+          end
 
           { status: 'ok' }.to_json
 
@@ -103,6 +109,34 @@ module CoffeeBot
             JSON.parse(raw_body)
           rescue JSON::ParserError
             Rack::Utils.parse_nested_query(raw_body).transform_keys(&:to_s)
+          end
+        end
+      end
+
+      # Send notification to baristas asynchronously
+      # Runs in a separate thread to not block the callback response
+      def notify_baristas_async(order_id)
+        Thread.new do
+          begin
+            order = Order[order_id]
+            unless order
+              log_error('Cannot notify baristas: order not found', order_id: order_id)
+              return
+            end
+
+            # Create bot instance for notification
+            bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
+            notifier = Services::Notifier.new(bot)
+
+            # Notify baristas about new paid order
+            notifier.notify_baristas_new_order(order)
+            log_info('Baristas notified about paid order', order_id: order_id)
+          rescue StandardError => e
+            log_error('Failed to notify baristas',
+              order_id: order_id,
+              error: e.message,
+              backtrace: e.backtrace&.first(3)
+            )
           end
         end
       end
