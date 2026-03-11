@@ -121,14 +121,18 @@ module CoffeeBot
       end
 
       # Sync order status with payment provider
+      # Also triggers notifications if payment was detected
       #
       # @param order [Order] Order to sync
-      # @return [Boolean] True if status was updated
+      # @return [Hash] Result with :updated, :order_id, and :notify_barista flags
       def self.sync_payment_status(order)
-        return false unless order.invoice_id_provider
+        return { updated: false, order_id: nil, notify_barista: false } unless order.invoice_id_provider
         
         mwallet = MWallet::Service.new
-        mwallet.sync_status(order)
+        result = mwallet.sync_status(order)
+        
+        # Return the result (contains :updated, :order_id, :notify_barista)
+        result
       end
 
       # Expire old invoices

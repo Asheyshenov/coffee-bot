@@ -54,9 +54,17 @@ module CoffeeBot
         synced_count = 0
         orders.each do |order|
           begin
-            if Services::OrderService.sync_payment_status(order)
+            result = Services::OrderService.sync_payment_status(order)
+            
+            if result[:updated]
               synced_count += 1
               log_info('Order status synced', order_id: order.id, new_status: order.status)
+              
+              # Send notifications if payment was detected
+              if result[:notify_barista] && result[:order_id]
+                notify_baristas_async(result[:order_id])
+                notify_client_async(result[:order_id])
+              end
             end
           rescue StandardError => e
             log_error('Failed to sync order status', order_id: order.id, error: e.message)
@@ -75,6 +83,62 @@ module CoffeeBot
              .where(Sequel.lit('created_at > ?', Time.now.utc - (CoffeeBot::Config::ORDER_EXPIRE_MINUTES * 60)))
              .limit(50)
              .all
+      end
+
+      # Send notification to baristas asynchronously
+      # Runs in a separate thread to not block the sync loop
+      def notify_baristas_async(order_id)
+        Thread.new do
+          begin
+            order = Order[order_id]
+            unless order
+              log_error('Cannot notify baristas: order not found', order_id: order_id)
+              return
+            end
+
+            # Create bot instance for notification
+            bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
+            notifier = Services::Notifier.new(bot)
+
+            # Notify baristas about new paid order
+            notifier.notify_baristas_new_order(order)
+            log_info('Baristas notified about paid order via polling', order_id: order_id)
+          rescue StandardError => e
+            log_error('Failed to notify baristas',
+              order_id: order_id,
+              error: e.message,
+              backtrace: e.backtrace&.first(3)
+            )
+          end
+        end
+      end
+
+      # Send notification to client asynchronously
+      # Runs in a separate thread to not block the sync loop
+      def notify_client_async(order_id)
+        Thread.new do
+          begin
+            order = Order[order_id]
+            unless order
+              log_error('Cannot notify client: order not found', order_id: order_id)
+              return
+            end
+
+            # Create bot instance for notification
+            bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
+            notifier = Services::Notifier.new(bot)
+
+            # Notify client about successful payment
+            notifier.notify_payment_received(order)
+            log_info('Client notified about payment via polling', order_id: order_id)
+          rescue StandardError => e
+            log_error('Failed to notify client',
+              order_id: order_id,
+              error: e.message,
+              backtrace: e.backtrace&.first(3)
+            )
+          end
+        end
       end
     end
   end

@@ -13,6 +13,30 @@ module CoffeeBot
       # Disable Sinatra logging (use our own)
       set :logging, false
 
+      # Configure host authorization per environment
+      # Prevents "Host not permitted" errors when using tunneling services
+      configure :development do
+        # Permit tunnel hosts for development callbacks
+        # Example: TUNNEL_HOSTS=.trycloudflare.com,.ngrok-free.app
+        tunnel_hosts = ENV.fetch('TUNNEL_HOSTS', '.trycloudflare.com').split(',').map(&:strip).reject(&:empty?)
+        set :host_authorization, {
+          permitted_hosts: ['localhost', '.localhost', '.test'] + tunnel_hosts
+        }
+      end
+
+      configure :production do
+        # In production, only permit configured public host
+        require 'uri'
+        public_host = begin
+          URI.parse(CoffeeBot::Config::PUBLIC_BASE_URL).host
+        rescue StandardError
+          nil
+        end
+        set :host_authorization, {
+          permitted_hosts: [public_host].compact
+        }
+      end
+
       # JSON content type for all responses
       before do
         content_type :json

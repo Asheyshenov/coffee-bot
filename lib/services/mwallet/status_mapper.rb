@@ -15,10 +15,17 @@ module MWallet
     PENDING_ALT = 9      # В ожидании (альтернативный код)
 
     # Map mwallet status to internal status symbol
+    # Supports both numeric status codes and string status values
     #
-    # @param status [Integer, String] MWallet status code
+    # @param status [Integer, String] MWallet status code or string
     # @return [Symbol] Internal status symbol
     def self.map_from_provider(status)
+      # Handle string status values from payments array
+      if status.is_a?(String)
+        return map_from_string_status(status)
+      end
+
+      # Handle numeric status codes
       code = status.to_i
 
       case code
@@ -30,6 +37,22 @@ module MWallet
         :pending
       when PARTIAL_REFUND
         :partial_refund
+      else
+        :unknown
+      end
+    end
+
+    # Map string status values to internal status symbols
+    # @param status [String] String status from provider
+    # @return [Symbol] Internal status symbol
+    def self.map_from_string_status(status)
+      case status.downcase.strip
+      when 'approved', 'success', 'completed'
+        :paid
+      when 'cancelled', 'canceled', 'expired', 'rejected'
+        :cancelled
+      when 'wait', 'pending', 'processing', 'created'
+        :pending
       else
         :unknown
       end

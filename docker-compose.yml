@@ -60,6 +60,12 @@ services:
       - QRPAY_MERCHANT_ID=${QRPAY_MERCHANT_ID}
       - QRPAY_SECRET_KEY=${QRPAY_SECRET_KEY}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+      # MWallet configuration
+      - MWALLET_BASE_URL=${MWALLET_BASE_URL:-https://mw-api-test.dengi.kg/api/json/json.php}
+      - MWALLET_SID=${MWALLET_SID}
+      - MWALLET_PASSWORD=${MWALLET_PASSWORD}
+      - MWALLET_API_VERSION=${MWALLET_API_VERSION:-1005}
+      - MWALLET_TEST_MODE=${MWALLET_TEST_MODE}
     ports:
       - "9292:9292"
     depends_on:

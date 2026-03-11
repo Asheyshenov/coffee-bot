@@ -46,8 +46,9 @@ module MWallet
       # Extract invoice data from response
       invoice_data = extract_invoice_data(response)
 
-      # Update order with invoice data
+      # Update order with invoice data and provider
       order.set_invoice_data(invoice_data)
+      order.update(provider: 'MWALLET')
       order.transition_to!(OrderStatus::INVOICE_CREATED)
 
       log_info('Invoice created successfully', order_id: order.id, invoice_id: invoice_data[:invoice_id])
@@ -69,14 +70,19 @@ module MWallet
     def get_payment_status(order)
       response = client.get_status(order.invoice_id_provider)
 
-      # Map status to internal format
-      provider_status = response.dig('data', 'status') || response.dig(:data, :status)
+      # Extract status from data.payments[0].status
+      # MWallet returns status in the payments array
+      data = response['data'] || response[:data] || {}
+      payments = data['payments'] || data[:payments] || []
+      payment = payments.first || {}
+
+      provider_status = payment['status'] || payment[:status]
       internal_status = StatusMapper.map_from_provider(provider_status)
 
       {
         provider_status: provider_status,
         internal_status: internal_status,
-        paid_amount: response.dig('data', 'amount') || response.dig(:data, :amount),
+        paid_amount: payment['amount'] || payment[:amount] || data['amount'] || data[:amount],
         raw_response: response
       }
     end
@@ -85,9 +91,9 @@ module MWallet
     # Updates order and payment records based on current provider status
     #
     # @param order [Order] The order to sync
-    # @return [Boolean] True if status was updated
+    # @return [Hash] Result with :updated, :order_id, and :notify_barista flags
     def sync_status(order)
-      return false unless order.invoice_id_provider
+      return { updated: false, order_id: nil, notify_barista: false } unless order.invoice_id_provider
 
       status_data = get_payment_status(order)
 
@@ -97,6 +103,8 @@ module MWallet
         internal_status: status_data[:internal_status]
       )
 
+      notify_barista = false
+
       case status_data[:internal_status]
       when :paid
         if order.status == OrderStatus::INVOICE_CREATED
@@ -104,17 +112,19 @@ module MWallet
             paid_amount: status_data[:paid_amount],
             paid_at: Time.now.utc
           )
-          return true
+          log_info('Order marked as paid via polling', order_id: order.id)
+          notify_barista = true
+          return { updated: true, order_id: order.id, notify_barista: notify_barista }
         end
       when :cancelled
         if [OrderStatus::INVOICE_CREATED, OrderStatus::PAID].include?(order.status)
           order.update(status: OrderStatus::CANCELLED)
-          return true
+          return { updated: true, order_id: order.id, notify_barista: false }
         end
       end
 
-      false
-      end
+      { updated: false, order_id: order.id, notify_barista: false }
+    end
 
     # Cancel invoice for order
     # Calls InvoiceCancel API and updates order status
