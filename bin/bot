@@ -19,13 +19,23 @@ Dir[File.expand_path('../lib/services/**/*.rb', __dir__)].sort.each { |f| requir
 # Load bot router
 require_relative '../lib/bot/router'
 
+# Load jobs
+require_relative '../lib/jobs/status_syncer'
+
 # Start the bot
-log_info('Starting Coffee Bot...', 
+log_info('Starting Coffee Bot...',
   environment: CoffeeBot::Config::RACK_ENV,
   database: CoffeeBot::Config::DATABASE_URL.split('/').last
 )
 
+# Initialize background jobs
+status_syncer = CoffeeBot::Jobs::StatusSyncer.new(interval_seconds: 2)
+
 begin
+  # Start background jobs in same lifecycle as bot
+  status_syncer.start
+  log_info('StatusSyncer started', interval: 2)
+  
   bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
   
   # Run bot with router
@@ -37,4 +47,8 @@ rescue Interrupt
 rescue StandardError => e
   log_error('Bot crashed', error: e.message, backtrace: e.backtrace.first(5))
   raise
+ensure
+  # Stop background jobs on exit
+  status_syncer.stop if status_syncer
+  log_info('Background jobs stopped')
 end
