@@ -255,10 +255,19 @@ module CoffeeBot
       def self.popular_items
         # Join with order_items to get order count, ordered by popularity
         MenuItem
-          .select(:menu_items__id, :menu_items__name, :menu_items__category, :menu_items__price, :menu_items__is_available,
-                  Sequel.function(:count, :order_items__id).as(:order_count))
+          .select(
+            Sequel.qualify(:menu_items, :id),
+            Sequel.qualify(:menu_items, :name),
+            Sequel.qualify(:menu_items, :category),
+            Sequel.qualify(:menu_items, :price),
+            Sequel.qualify(:menu_items, :is_available),
+            Sequel.qualify(:menu_items, :sizes),
+            Sequel.qualify(:menu_items, :default_size),
+            Sequel.qualify(:menu_items, :currency),
+            Sequel.function(:count, Sequel.qualify(:order_items, :id)).as(:order_count)
+          )
           .left_join(:order_items, menu_item_id: :id)
-          .group_by(:menu_items__id)
+          .group_by(Sequel.qualify(:menu_items, :id))
           .order(Sequel.desc(:order_count))
           .limit(5)
           .all

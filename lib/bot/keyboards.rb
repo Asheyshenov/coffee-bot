@@ -114,13 +114,26 @@ module CoffeeBot
             Telegram::Bot::Types::InlineKeyboardButton.new(text: '🗑 Очистить', callback_data: 'cart_clear')
           ],
           [
-            Telegram::Bot::Types::InlineKeyboardButton.new(text: '✏ Изменить', callback_data: 'cart_edit')
-          ],
-          [
             Telegram::Bot::Types::InlineKeyboardButton.new(text: '💳 Оплатить', callback_data: 'cart_checkout')
           ]
         ]
       )
+    end
+
+    # Cart edit keyboard with remove buttons for each item
+    # @param draft [Draft] Draft with items
+    # @return [Telegram::Bot::Types::InlineKeyboardMarkup]
+    def self.cart_edit_keyboard(draft)
+      buttons = draft.items.each_with_index.map do |item, index|
+        [Telegram::Bot::Types::InlineKeyboardButton.new(
+          text: "❌ #{item['display_name']} x#{item['qty']}",
+          callback_data: "cart_remove_#{index}"
+        )]
+      end
+      
+      buttons << [Telegram::Bot::Types::InlineKeyboardButton.new(text: '⬅ Назад', callback_data: 'menu_cart')]
+      
+      Telegram::Bot::Types::InlineKeyboardMarkup.new(inline_keyboard: buttons)
     end
 
     # Confirmation keyboard
