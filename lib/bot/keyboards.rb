@@ -235,5 +235,16 @@ module CoffeeBot
         ]
       )
     end
+
+    # Pre-order keyboard - shown when user has active order but wants to make another
+    def self.preorder_keyboard
+      Telegram::Bot::Types::InlineKeyboardMarkup.new(
+        inline_keyboard: [
+          [
+            Telegram::Bot::Types::InlineKeyboardButton.new(text: '🛒 Сделать предзаказ', callback_data: 'preorder_start')
+          ]
+        ]
+      )
+    end
   end
 end

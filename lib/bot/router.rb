@@ -132,6 +132,9 @@ module CoffeeBot
           handle_size_select(callback, Regexp.last_match(1).to_i, Regexp.last_match(2))
         when /^qty_(\d+)_(small|medium|large)_(\d+)$/
           handle_qty_with_size(callback, Regexp.last_match(1).to_i, Regexp.last_match(2), Regexp.last_match(3).to_i)
+        # Pre-order handler
+        when 'preorder_start'
+          handle_preorder_start(callback)
         else
           log_debug('Unknown callback', data: data)
         end
@@ -174,9 +177,16 @@ module CoffeeBot
         # Check if user has active order
         active = Services::OrderService.active_order_for_client(user_id)
         if active
+          # Show message with pre-order button
+          items_summary = active.format_short_summary
+          text = "У вас есть активный заказ ##{active.id} (#{items_summary}). Дождитесь его завершения или сделайте предзаказ."
+          
+          keyboard = Bot.preorder_keyboard
+          
           bot.api.send_message(
             chat_id: user_id,
-            text: "У вас уже есть активный заказ ##{active.id}. Дождитесь его завершения."
+            text: text,
+            reply_markup: keyboard
           )
           return
         end
@@ -184,6 +194,24 @@ module CoffeeBot
         # Start order wizard
         Draft.clear(user_id)
         show_categories(message)
+      end
+
+      # Handle pre-order start (when user has active order but wants to make another)
+      def handle_preorder_start(callback)
+        user_id = callback.from.id
+
+        # Start order wizard for pre-order
+        Draft.clear(user_id)
+        
+        # Show the main menu keyboard
+        keyboard = Bot.main_menu
+        
+        bot.api.edit_message_text(
+          chat_id: user_id,
+          message_id: callback.message.message_id,
+          text: '🛒 Предзаказ: выберите категорию:',
+          reply_markup: keyboard
+        )
       end
 
       def handle_my_orders(message)
