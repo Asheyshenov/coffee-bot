@@ -2,6 +2,7 @@
 
 # Invoice Expirer Job
 # Periodically expires old invoices that haven't been paid
+# Also cancels invoices via MWallet API when they expire
 
 require_relative '../../config/boot'
 
@@ -14,6 +15,7 @@ module CoffeeBot
         @interval_seconds = interval_seconds
         @expire_minutes = expire_minutes || CoffeeBot::Config::ORDER_EXPIRE_MINUTES
         @running = false
+        @mwallet_service = MWallet::Service.new
       end
 
       # Start the job loop
@@ -44,6 +46,10 @@ module CoffeeBot
 
       # Run once (for manual execution or testing)
       def run_once
+        # First, cancel expired invoices via API
+        cancel_expired_invoices_via_api
+        
+        # Then, mark them as expired in database
         expired_count = Services::OrderService.expire_old_invoices(@expire_minutes)
 
         if expired_count > 0
@@ -57,6 +63,29 @@ module CoffeeBot
       end
 
       private
+
+      # Cancel expired invoices via MWallet API
+      def cancel_expired_invoices_via_api
+        # Find orders that have expired but not yet cancelled
+        cutoff_time = Time.now.utc - (@expire_minutes * 60)
+        
+        expired_orders = Order.where(status: OrderStatus::INVOICE_CREATED)
+                              .where(Sequel.lit('created_at < ?', cutoff_time))
+                              .where(~{invoice_id_provider: nil})
+                              .limit(50)
+                              .all
+
+        expired_orders.each do |order|
+          begin
+            @mwallet_service.cancel_invoice_for_order(order)
+            log_info('Cancelled expired invoice via API', order_id: order.id, invoice_id: order.invoice_id_provider)
+          rescue StandardError => e
+            log_error('Failed to cancel expired invoice via API', order_id: order.id, error: e.message)
+            # Still mark as expired locally
+            order.update(status: OrderStatus::EXPIRED)
+          end
+        end
+      end
 
       # Notify clients about expired orders
       def notify_expired_orders(count)
