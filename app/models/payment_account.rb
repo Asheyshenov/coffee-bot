@@ -8,6 +8,7 @@ class PaymentAccount < ApplicationRecord
 
   belongs_to :tenant
   has_many :orders, dependent: :restrict_with_error
+  has_many :callback_logs, dependent: :delete_all
 
   encrypts :password
 

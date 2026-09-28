@@ -56,4 +56,18 @@ RSpec.describe "Tenant isolation" do
 
     expect(seen).to eq([ tenant_id, order.id ])
   end
+
+  it "deletes a coffee shop with all its data (orders, callback logs, bot updates)" do
+    tenant = current_tenant
+    make_order
+    CallbackLog.log_callback(payment_account: tenant.payment_account, raw_body: "{}", invoice_id: "INV-1")
+    TelegramUpdate.accept?(tenant.bot, 1)
+
+    ActsAsTenant.without_tenant { tenant.destroy! }
+
+    ActsAsTenant.without_tenant do
+      expect(Tenant.exists?(tenant.id)).to be(false)
+      expect([ Order, CallbackLog, PaymentAccount, Bot, TelegramUpdate ].map(&:count)).to all(eq(0))
+    end
+  end
 end

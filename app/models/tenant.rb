@@ -6,6 +6,7 @@ class Tenant < ApplicationRecord
 
   # Destroy order matters: orders reference customers and payment accounts
   has_many :orders, dependent: :destroy
+  has_many :callback_logs, dependent: :delete_all
   has_many :drafts, dependent: :destroy
   has_many :customers, dependent: :destroy
   has_many :menu_items, dependent: :destroy
