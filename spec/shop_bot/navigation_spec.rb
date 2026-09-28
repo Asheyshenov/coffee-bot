@@ -9,16 +9,53 @@ RSpec.describe "ShopBot::Router: commands, menu and order wizard" do
   def markup_of(call) = call[:reply_markup].to_h.to_s
 
   describe "commands" do
-    it "/start greets with the shop name, registers the customer and shows the reply keyboard" do
+    it "/start greets with the shop name, registers the customer, keeps the cart and shows the reply keyboard" do
       cart.add_item(croissant, 1)
 
       dispatch(text_msg("/start"))
 
-      message = api.messages_to(client_id).last
-      expect(message[:text]).to include("Привет, U#{client_id}", current_tenant.name)
-      expect(markup_of(message)).to include(ShopBot::Router::PREORDER_BUTTON)
+      messages = api.messages_to(client_id)
+      expect(messages.map { |m| m[:text] }.join("\n")).to include("Привет, U#{client_id}", current_tenant.name)
+      expect(messages.map { |m| markup_of(m) }.join).to include(ShopBot::Router::PREORDER_BUTTON)
       expect(Customer.find_by(telegram_user_id: client_id).first_name).to eq("U#{client_id}")
-      expect(Draft.for_user(client_id)).to be_nil
+      # The cart is shared with the Mini App: /start keeps it and only restarts the wizard
+      expect(Draft.for_user(client_id).items.map { |i| i["name"] }).to eq([ "Круассан" ])
+      expect(Draft.for_user(client_id).current_step).to eq("select_category")
+    end
+
+    it "/start offers the Mini App: a web_app button in the welcome, the reply keyboard stays" do
+      stub_public_base_url("https://coffee.example.kg")
+      bot = current_tenant.bot
+
+      dispatch(text_msg("/start"))
+
+      greeting, welcome = api.messages_to(client_id)
+      expect(greeting[:text]).to include("Привет, U#{client_id}")
+      expect(markup_of(greeting)).to include(ShopBot::Router::PREORDER_BUTTON, ShopBot::Router::MY_ORDERS_BUTTON)
+      expect(welcome[:text]).to include("Добро пожаловать в #{current_tenant.name}", "Откройте меню")
+      expect(welcome[:reply_markup].to_h)
+        .to eq(inline_keyboard: [ [ { text: "☕ Открыть меню", web_app: { url: "https://coffee.example.kg/app/#{bot.id}" } } ] ])
+      expect(bot.mini_app_url).to eq("https://coffee.example.kg/app/#{bot.id}")
+    end
+
+    it "/start without HTTPS has no Mini App button (Telegram would reject it): one welcome as before" do
+      stub_public_base_url("http://localhost:3000")
+
+      dispatch(text_msg("/start"))
+
+      message = api.messages_to(client_id).sole
+      expect(message[:text]).to include("Привет, U#{client_id}", "Добро пожаловать в #{current_tenant.name}", "Выберите действие")
+      expect(markup_of(message)).to include(ShopBot::Router::PREORDER_BUTTON)
+      expect(markup_of(message)).not_to include("web_app")
+    end
+
+    it "the chat ordering flow still works after the Mini App welcome" do
+      stub_public_base_url("https://coffee.example.kg")
+      dispatch(text_msg("/start"))
+
+      dispatch(text_msg(ShopBot::Router::PREORDER_BUTTON))
+
+      expect(api.messages_to(client_id).last[:text]).to include("Выберите категорию")
     end
 
     it "understands /start with a deep-link payload and commands addressed to the bot" do
@@ -26,7 +63,7 @@ RSpec.describe "ShopBot::Router: commands, menu and order wizard" do
       dispatch(text_msg("/help@#{current_tenant.bot.username}"))
 
       texts = api.messages_to(client_id).map { |m| m[:text] }
-      expect(texts.first).to include("Добро пожаловать")
+      expect(texts).to include(a_string_including("Добро пожаловать"))
       expect(texts.last).to include("Справка по командам")
     end
 

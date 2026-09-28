@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
 # Connects a coffee shop's Telegram bot (token from @BotFather) to the platform:
-# checks the token, stores the bot, points its webhook here and sets the command menu.
+# checks the token, stores the bot, points its webhook here, sets the command menu and
+# the chat menu button that opens the customer Mini App.
 #
 #   bot = BotRegistration.new(tenant: tenant, token: "123456:ABC...").call
+#   BotRegistration.refresh(tenant.bot) # same setup again for a connected bot, no new token
 class BotRegistration
   class Error < StandardError; end
   # The token is malformed or Telegram does not know it
@@ -22,8 +24,16 @@ class BotRegistration
     { command: "cancel", description: "Отменить текущий заказ" },
     { command: "help", description: "Справка" }
   ].freeze
+  MENU_BUTTON_TEXT = "☕ Меню"
 
   attr_reader :tenant
+
+  # Re-applies the webhook, the command menu and the Mini App menu button of an already
+  # connected bot (e.g. after PUBLIC_BASE_URL changed). Updates waiting in Telegram are kept.
+  #
+  # @return [Hash] { webhook: true, commands: Boolean, menu_button: true | false | :skipped }
+  # @raise [Error] the bot is not active; [TelegramError] Telegram refused the webhook
+  def self.refresh(bot) = new(tenant: bot.tenant, token: bot.token).refresh(bot)
 
   def initialize(tenant:, token:)
     @tenant = tenant
@@ -47,12 +57,23 @@ class BotRegistration
     end
 
     set_commands(bot)
+    set_menu_button(bot)
     previous.each { |old_bot| delete_webhook(old_bot) }
     AppLog.info("Bot connected", tenant_id: tenant.id, bot_id: bot.id, username: bot.username)
     bot
   rescue ActiveRecord::RecordNotUnique
     # Another coffee shop connected the same bot at the same moment
     raise AlreadyConnected, "@#{me&.username} is already connected to another coffee shop"
+  end
+
+  # @see .refresh
+  def refresh(bot)
+    raise Error, "@#{bot.username} is not the active bot of this coffee shop" unless bot.active? && bot.tenant_id == tenant.id
+
+    set_webhook!(bot, drop_pending_updates: false)
+    result = { webhook: true, commands: set_commands(bot), menu_button: set_menu_button(bot) }
+    AppLog.info("Bot refreshed", tenant_id: tenant.id, bot_id: bot.id, commands: result[:commands], menu_button: result[:menu_button])
+    result
   end
 
   private
@@ -86,9 +107,9 @@ class BotRegistration
     bot
   end
 
-  def set_webhook!(bot)
+  def set_webhook!(bot, drop_pending_updates: true)
     api.set_webhook(url: bot.webhook_url, secret_token: bot.webhook_secret,
-                    allowed_updates: ALLOWED_UPDATES, drop_pending_updates: true)
+                    allowed_updates: ALLOWED_UPDATES, drop_pending_updates: drop_pending_updates)
   rescue Telegram::Bot::Exceptions::ResponseError => e
     raise TelegramError, "setWebhook failed (#{e.error_code}): #{e.data['description'] || e.data[:description]}"
   rescue Faraday::Error => e
@@ -96,10 +117,31 @@ class BotRegistration
   end
 
   # The command menu is a convenience: a failure does not undo the registration
+  #
+  # @return [Boolean] whether Telegram accepted it
   def set_commands(bot)
     api.set_my_commands(commands: COMMANDS)
+    true
   rescue StandardError => e
     AppLog.warn("setMyCommands failed", bot_id: bot.id, error: e.class.name)
+    false
+  end
+
+  # The "☕ Меню" button next to the input field opens the Mini App (best effort, like the
+  # command menu). Telegram accepts only HTTPS Mini App URLs: skipped for a local http setup.
+  #
+  # @return [true, false, :skipped]
+  def set_menu_button(bot)
+    unless bot.mini_app_available?
+      AppLog.info("Mini App menu button skipped: PUBLIC_BASE_URL is not https", bot_id: bot.id)
+      return :skipped
+    end
+
+    api.set_chat_menu_button(menu_button: { type: "web_app", text: MENU_BUTTON_TEXT, web_app: { url: bot.mini_app_url } })
+    true
+  rescue StandardError => e
+    AppLog.warn("setChatMenuButton failed", bot_id: bot.id, error: e.class.name)
+    false
   end
 
   # Stop Telegram from delivering updates of a replaced bot (best effort)

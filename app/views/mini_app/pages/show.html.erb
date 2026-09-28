@@ -1,0 +1,28 @@
+<% content_for :title, @tenant.name %>
+
+<%= tag.main id: "mini-app", class: "ma-app",
+             data: { page: "app", bot_id: @bot.id, api_base: @api_base, shop_name: @tenant.name, bot_username: @bot.username } do %>
+  <%# Shown until the menu is loaded (replaced by app/javascript/mini_app/app.js) %>
+  <div class="ma-boot" aria-busy="true" aria-label="Загружаем меню">
+    <div class="ma-header">
+      <h1 class="ma-title"><%= @tenant.name %></h1>
+    </div>
+    <div class="ma-chips" aria-hidden="true">
+      <span class="ma-skeleton ma-skeleton-chip"></span>
+      <span class="ma-skeleton ma-skeleton-chip"></span>
+      <span class="ma-skeleton ma-skeleton-chip"></span>
+    </div>
+    <div class="ma-grid mt-4" aria-hidden="true">
+      <% 4.times do %>
+        <span class="ma-skeleton ma-skeleton-card"></span>
+      <% end %>
+    </div>
+  </div>
+
+  <noscript>
+    <div class="ma-notice">
+      <p class="ma-notice-title">Включите JavaScript</p>
+      <p class="ma-notice-text">Без него меню не откроется.</p>
+    </div>
+  </noscript>
+<% end %>

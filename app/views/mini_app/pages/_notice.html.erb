@@ -1,0 +1,9 @@
+<%# Static full-screen message (unknown bot, shop not serving). data-page="notice": the
+    JS only tells Telegram the page is ready and offers a "Закрыть" button. %>
+<%= tag.main id: "mini-app", class: "ma-app", data: { page: "notice" } do %>
+  <div class="ma-notice" role="status">
+    <div class="ma-notice-emoji" aria-hidden="true"><%= emoji %></div>
+    <h1 class="ma-notice-title"><%= title %></h1>
+    <p class="ma-notice-text"><%= text %></p>
+  </div>
+<% end %>

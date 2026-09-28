@@ -1,1 +1,4 @@
 @import "tailwindcss";
+
+/* Customer Telegram Mini App (scoped to html.mini-app) */
+@import "./mini_app.css";

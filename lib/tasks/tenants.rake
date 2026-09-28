@@ -7,6 +7,7 @@
 #   bin/rails "tenants:add_staff[corner,123456789,owner]"
 #   bin/rails "tenants:seed_menu[corner]"
 #   bin/rails "tenants:connect_bot[corner,123456:ABC-DEF]"
+#   bin/rails "tenants:refresh_bot[corner]"
 #   bin/rails tenants:list
 #
 # Every task can be re-run safely and never prints bot tokens or MWallet passwords.
@@ -92,6 +93,32 @@ module TenantTasks
     raise
   rescue StandardError => e
     raise Error, "bot not connected: #{redact(e.message, token)} (#{e.class})"
+  end
+
+  # Sets the webhook, command menu and Mini App menu button of the connected bot again,
+  # without a new token: after PUBLIC_BASE_URL changed, or for bots connected before the Mini App
+  def refresh_bot(tenant)
+    bot = tenant.bot
+    raise Error, "no bot connected (bin/rails \"tenants:connect_bot[#{tenant.slug},TOKEN]\")" unless bot
+
+    token = bot.token
+    result = ActsAsTenant.with_tenant(tenant) { BotRegistration.refresh(bot) }
+    say tenant, "bot @#{bot.username} refreshed, webhook #{bot.webhook_url}"
+    say tenant, result[:commands] ? "command menu set" : "command menu NOT set (Telegram error, see the log)"
+    say tenant, menu_button_status(bot, result[:menu_button])
+    bot
+  rescue Error, ActiveRecord::Encryption::Errors::Configuration
+    raise
+  rescue StandardError => e
+    raise Error, "bot not refreshed: #{redact(e.message, token)} (#{e.class})"
+  end
+
+  def menu_button_status(bot, status)
+    case status
+    when true then "Mini App menu button set, #{bot.mini_app_url}"
+    when :skipped then "Mini App menu button skipped: PUBLIC_BASE_URL must be https:// (Telegram opens Mini Apps only over HTTPS)"
+    else "Mini App menu button NOT set (Telegram error, see the log)"
+    end
   end
 
   # Makes the account with this SID the tenant's only active MWallet account.
@@ -294,6 +321,11 @@ namespace :tenants do
   desc "Connect the shop's Telegram bot and set its webhook"
   task :connect_bot, %i[slug token] => :environment do |_task, args|
     TenantTasks.run { TenantTasks.connect_bot(TenantTasks.find_tenant!(args[:slug]), args[:token]) }
+  end
+
+  desc "Set the webhook, command menu and Mini App menu button of the shop's connected bot again (no new token)"
+  task :refresh_bot, %i[slug] => :environment do |_task, args|
+    TenantTasks.run { TenantTasks.refresh_bot(TenantTasks.find_tenant!(args[:slug])) }
   end
 
   desc "Set the shop's MWallet merchant account (test_mode: true = test API, false = live payments)"

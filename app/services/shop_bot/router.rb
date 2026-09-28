@@ -18,6 +18,8 @@ module ShopBot
     INVALID_QTY_TEXT = "Некорректное количество"
     ITEM_NOT_FOUND = "Товар не найден"
     INVOICE_FAILED_TEXT = "❌ Не удалось создать счёт на оплату. Попробуйте ещё раз через минуту."
+    START_MINI_APP_TEXT = "Откройте меню, выберите напитки и оплатите заказ в пару касаний 👇\n" \
+                          "Или закажите прямо в чате: кнопки под полем ввода."
 
     # Main menu buttons -> category names (matched without emoji, see MenuItem.category_key)
     MENU_CATEGORIES = { "coffee" => "☕ Кофе", "desserts" => "🍰 Десерты", "tea" => "🍵 Чай", "addons" => "➕ Добавки" }.freeze
@@ -40,6 +42,12 @@ module ShopBot
     end
 
     private
+
+    # Start the ordering wizard again without emptying the cart: the cart is shared with
+    # the Mini App, where the customer may have just filled it
+    def reset_wizard(telegram_user_id)
+      Draft.for_user(telegram_user_id)&.set_step("select_category")
+    end
 
     def api = bot.api
     def notifier = @notifier ||= Notifier.new(bot)
@@ -117,23 +125,33 @@ module ShopBot
     def handle_start(message)
       user_id = message.from.id
       Customer.from_telegram(message.from)
-      Draft.clear(user_id)
+      reset_wizard(user_id)
 
-      text = <<~TEXT
-        Привет, #{message.from.first_name}! 👋
+      greeting = "Привет, #{message.from.first_name}! 👋"
+      welcome = "Добро пожаловать в #{tenant.name}!\nЯ помогу вам заказать вкусный кофе."
 
-        Добро пожаловать в #{tenant.name}!
-        Я помогу вам заказать вкусный кофе.
+      # A message has one keyboard: the greeting brings the reply keyboard of the chat
+      # ordering flow, the welcome right above the input field opens the Mini App
+      if (mini_app = mini_app_keyboard)
+        send_text(user_id, greeting, reply_markup: Keyboards.reply_keyboard)
+        send_text(user_id, "#{welcome}\n\n#{START_MINI_APP_TEXT}", reply_markup: mini_app)
+      else
+        send_text(user_id, "#{greeting}\n\n#{welcome}\n\nВыберите действие:", reply_markup: Keyboards.reply_keyboard)
+      end
+    end
 
-        Выберите действие:
-      TEXT
-      send_text(user_id, text, reply_markup: Keyboards.reply_keyboard)
+    # Inline web_app button of the Mini App, nil when Telegram would reject its URL (not HTTPS)
+    def mini_app_keyboard
+      return Keyboards.mini_app_keyboard(bot.mini_app_url) if bot.mini_app_available?
+
+      AppLog.info("Mini App button skipped: PUBLIC_BASE_URL is not https", bot_id: bot.id)
+      nil
     end
 
     def handle_order_start(message)
       user_id = message.from.id
       # The client starts a new order
-      Draft.clear(user_id)
+      reset_wizard(user_id)
 
       active_orders = OrderService.active_orders_for_client(user_id)
       if active_orders.any?
@@ -149,7 +167,7 @@ module ShopBot
 
     # The client has an active order but wants another one
     def handle_preorder_start(callback)
-      Draft.clear(callback.from.id)
+      reset_wizard(callback.from.id)
       edit(callback, "🛒 Предзаказ: выберите категорию:", reply_markup: Keyboards.main_menu)
     end
 
@@ -451,7 +469,7 @@ module ShopBot
       active = OrderService.active_order_for_client(user_id)
       return answer_callback(callback, text: "У вас уже есть активный заказ ##{active.id}", show_alert: true) if active
 
-      Draft.clear(user_id)
+      reset_wizard(user_id)
       send_text(user_id, "🏠 Главное меню:", reply_markup: Keyboards.main_menu)
     end
 

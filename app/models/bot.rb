@@ -23,6 +23,14 @@ class Bot < ApplicationRecord
     "#{Rails.configuration.x.public_base_url}/tg/#{id}"
   end
 
+  # The customer Mini App of this bot (menu, cart, checkout): see MiniApp::PagesController
+  def mini_app_url
+    "#{Rails.configuration.x.public_base_url}/app/#{id}"
+  end
+
+  # Telegram opens web_app buttons (inline keyboard, chat menu button) only over HTTPS
+  def mini_app_available? = mini_app_url.start_with?("https://")
+
   # Constant-time check of the X-Telegram-Bot-Api-Secret-Token header
   def valid_webhook_secret?(value)
     value.present? && ActiveSupport::SecurityUtils.secure_compare(value, webhook_secret)

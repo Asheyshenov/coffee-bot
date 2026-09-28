@@ -1,0 +1,4 @@
+<% content_for :title, @tenant.name %>
+
+<%= render "notice", emoji: "☕", title: "#{@tenant.name} временно не принимает заказы",
+                     text: "Загляните чуть позже: мы скоро снова будем готовить для вас." %>

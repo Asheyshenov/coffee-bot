@@ -5,8 +5,16 @@ module ShopBot
   module Keyboards
     module_function
 
+    MINI_APP_BUTTON = "☕ Открыть меню"
+
     def button(text, callback_data) = Telegram::Bot::Types::InlineKeyboardButton.new(text: text, callback_data: callback_data)
     def inline(rows) = Telegram::Bot::Types::InlineKeyboardMarkup.new(inline_keyboard: rows)
+
+    # Opens the customer Mini App. Inline (not reply keyboard) buttons: only they pass the
+    # signed initData the Mini App API authenticates with. The URL must be HTTPS.
+    def web_app_button(text, url) = Telegram::Bot::Types::InlineKeyboardButton.new(text: text, web_app: { url: url })
+
+    def mini_app_keyboard(url) = inline([ [ web_app_button(MINI_APP_BUTTON, url) ] ])
 
     # Persistent reply keyboard under the input field
     def reply_keyboard

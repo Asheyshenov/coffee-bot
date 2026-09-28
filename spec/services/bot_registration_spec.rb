@@ -97,4 +97,77 @@ RSpec.describe BotRegistration do
 
     expect(register).to be_active
   end
+
+  describe "Mini App menu button" do
+    it "points the chat menu button to the Mini App of the bot" do
+      stub_public_base_url("https://coffee.example.kg")
+
+      bot = register
+
+      expect(bot.mini_app_url).to eq("https://coffee.example.kg/app/#{bot.id}")
+      expect(api.of(:set_chat_menu_button).sole)
+        .to eq(menu_button: { type: "web_app", text: "☕ Меню", web_app: { url: "https://coffee.example.kg/app/#{bot.id}" } })
+      # After the webhook and the command menu
+      names = api.calls.map(&:first)
+      expect(names.index(:set_chat_menu_button)).to be > names.index(:set_my_commands)
+    end
+
+    it "is skipped for an http PUBLIC_BASE_URL (Telegram accepts only HTTPS Mini Apps)" do
+      stub_public_base_url("http://localhost:3000")
+
+      expect(register).to be_active
+      expect(api.of(:set_chat_menu_button)).to be_empty
+    end
+
+    it "still connects the bot when Telegram refuses the menu button" do
+      stub_public_base_url("https://coffee.example.kg")
+      allow(api).to receive(:set_chat_menu_button).and_raise(telegram_error(400, "Bad Request: invalid url"))
+
+      bot = register
+
+      expect(bot).to be_active
+      expect(bot.reload.token).to eq(token)
+      expect(api.of(:delete_webhook).size).to eq(1)
+    end
+  end
+
+  describe ".refresh" do
+    let(:bot) { current_tenant.bot }
+
+    before { stub_public_base_url("https://coffee.example.kg") }
+
+    it "sets the webhook, commands and menu button again with the stored token, keeping pending updates" do
+      result = described_class.refresh(bot)
+
+      expect(result).to eq(webhook: true, commands: true, menu_button: true)
+      expect(Telegram::Bot::Client).to have_received(:new).with(bot.token)
+      expect(api.of(:get_me)).to be_empty
+      expect(api.of(:set_webhook).sole).to eq(url: "https://coffee.example.kg/tg/#{bot.id}", secret_token: bot.webhook_secret,
+                                             allowed_updates: %w[message callback_query], drop_pending_updates: false)
+      expect(api.of(:set_my_commands).sole[:commands].map { |c| c[:command] }).to eq(%w[start order my_orders cancel help])
+      expect(api.of(:set_chat_menu_button).sole[:menu_button][:web_app]).to eq(url: "https://coffee.example.kg/app/#{bot.id}")
+      expect(bot.reload).to have_attributes(active: true, token: "123:TEST")
+    end
+
+    it "reports the steps that failed or were skipped" do
+      stub_public_base_url("http://localhost:3000")
+      allow(api).to receive(:set_my_commands).and_raise(telegram_error(429, "Too Many Requests"))
+
+      expect(described_class.refresh(bot)).to eq(webhook: true, commands: false, menu_button: :skipped)
+    end
+
+    it "raises when Telegram refuses the webhook" do
+      allow(api).to receive(:set_webhook).and_raise(telegram_error(401, "Unauthorized"))
+
+      expect { described_class.refresh(bot) }.to raise_error(BotRegistration::TelegramError, /setWebhook failed \(401\)/)
+      expect(api.of(:set_chat_menu_button)).to be_empty
+    end
+
+    it "refuses a bot that is no longer active" do
+      bot.update!(active: false)
+
+      expect { described_class.refresh(bot) }.to raise_error(BotRegistration::Error, /not the active bot/)
+      expect(api.calls).to be_empty
+    end
+  end
 end

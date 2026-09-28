@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru" class="mini-app">
+  <head>
+    <meta charset="utf-8">
+    <title><%= content_for(:title) || "Меню" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="robots" content="noindex">
+    <link rel="icon" href="/icon.png" type="image/png">
+
+    <%= stylesheet_link_tag "tailwind" %>
+    <%# Telegram.WebApp: loaded before the app, as Telegram asks (it also sets the --tg-theme-* colours) %>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <%= javascript_inline_importmap_tag %>
+    <%= javascript_module_preload_tag(*mini_app_module_paths) %>
+    <%= javascript_import_module_tag MiniApp::PagesController::ENTRY_POINT %>
+  </head>
+
+  <body>
+    <%= yield %>
+  </body>
+</html>
