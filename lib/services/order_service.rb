@@ -17,10 +17,14 @@ module CoffeeBot
       #
       # @param draft [Draft] The draft with cart items
       # @param client [Client] The client making the order
-      # @return [Order] Created order
+      # @return [Order, nil] Created order, nil if the cart is empty or has unavailable items
       def self.create_from_draft(draft, client)
         order = Order.create_from_draft(draft, client)
-        
+        unless order
+          log_info('Order not created: cart is empty or has unavailable items', client: client.telegram_user_id)
+          return nil
+        end
+
         log_info('Order created',
           order_id: order.id,
           client: client.display_name,

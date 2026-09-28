@@ -124,26 +124,16 @@ RSpec.describe 'Integration tests' do
 
   describe 'Atomic claim race condition' do
     it 'ensures only one barista can claim an order' do
-      # Simulate concurrent claims
       order = create_test_order(create_test_client)
       order.update(status: OrderStatus::PAID)
 
-      results = []
-      threads = []
+      # Five baristas each hold an instance loaded while the order was still PAID.
+      # (Real threads can't be used: every connection to sqlite::memory: is a separate DB.)
+      stale_copies = Array.new(5) { Order[order.id] }
+      results = stale_copies.each_with_index.map { |copy, barista_id| copy.claim_for_barista!(barista_id) }
 
-      # Simulate 5 concurrent claims
-      5.times do |i|
-        threads << Thread.new do
-          result = order.claim_for_barista!(i)
-          results << result
-        end
-      end
-
-      threads.each(&:join)
-
-      # Only one should succeed
-      successful_claims = results.count(true)
-      expect(successful_claims).to eq(1)
+      expect(results.count(true)).to eq(1)
+      expect(order.refresh.assigned_to_barista_id).to eq(0)
     end
   end
 

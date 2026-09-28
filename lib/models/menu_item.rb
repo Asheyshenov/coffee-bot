@@ -92,7 +92,16 @@ class MenuItem < Sequel::Model
   # Check if item is a drink (category supports sizes)
   # @return [Boolean] true if drink category
   def drink?
-    DRINK_CATEGORIES.include?(category)
+    DRINK_CATEGORIES.any? { |c| CoffeeBot::Services::MenuService.same_category?(c, category) }
+  end
+
+  # Name with size label for carts and orders, e.g. "Латте (M)"
+  # @param size [String, nil] Size key
+  # @return [String]
+  def display_name_for_size(size)
+    return name unless size && has_sizes?
+
+    "#{name} (#{SIZE_LABELS[size] || size.upcase})"
   end
 
   # Get price for specific size

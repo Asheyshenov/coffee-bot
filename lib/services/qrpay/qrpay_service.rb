@@ -47,7 +47,8 @@ module QRPay
 
       # Update order with invoice data
       order.set_invoice_data(invoice_data)
-      order.transition_to!(OrderStatus::INVOICE_CREATED)
+      # Re-issuing an expired invoice keeps the order in INVOICE_CREATED
+      order.transition_to!(OrderStatus::INVOICE_CREATED) unless order.status == OrderStatus::INVOICE_CREATED
 
       log_info('Invoice created successfully', order_id: order.id, invoice_id: invoice_data[:invoice_id])
 

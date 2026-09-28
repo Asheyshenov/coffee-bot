@@ -15,6 +15,8 @@ module CoffeeBot
       PAID_STATUSES = [OrderStatus::PAID, OrderStatus::IN_PROGRESS, OrderStatus::READY].freeze
 
       BARISTA_ACCESS_DENIED = '⛔ У вас нет доступа к панели баристы.'
+      UNKNOWN_INPUT_TEXT = "Я вас не понял 🤔\nИспользуйте кнопки меню или /order, чтобы сделать заказ. /help — справка."
+      INVALID_QTY_TEXT = 'Некорректное количество'
 
       attr_reader :bot, :notifier
 
@@ -346,15 +348,25 @@ module CoffeeBot
         user_id = message.from.id
         draft = Draft.for_user(user_id)
 
-        return unless draft
+        unless draft
+          bot.api.send_message(chat_id: user_id, text: UNKNOWN_INPUT_TEXT)
+          return
+        end
 
         state = draft.state
         step = state['step']
 
         case step
         when 'add_comment'
-          # Save comment and show confirmation
-          draft.set_comment(message.text[0..200])
+          # Stickers, photos, voice messages have no text
+          comment = message.text.to_s.strip
+          if comment.empty?
+            bot.api.send_message(chat_id: user_id, text: 'Отправьте комментарий текстом или нажмите «⏭ Пропустить».')
+            return
+          end
+
+          # Save comment (truncated to the column size) and show confirmation
+          draft.set_comment(comment)
           draft.set_step('confirm')
           show_confirmation(message)
         else
@@ -482,9 +494,12 @@ module CoffeeBot
           return
         end
 
-        # Add to cart
+        # Add to cart (crafted callbacks may carry any quantity)
         draft = Draft.get_or_create(user_id)
-        draft.add_item(item, qty)
+        unless draft.add_item(item, qty)
+          answer_callback(callback, text: INVALID_QTY_TEXT, show_alert: true)
+          return
+        end
         draft.set_step('cart')
 
         # Show cart
@@ -627,30 +642,42 @@ module CoffeeBot
 
         return unless draft
 
+        send_confirmation(user_id, draft)
+      end
+
+      # Confirmation screen. The cart is re-checked against the menu first, so the
+      # client confirms current prices and only available items.
+      #
+      # @param changes [Hash] Result of Draft#sync_with_menu! if the caller already ran it
+      def send_confirmation(chat_id, draft, changes = draft.sync_with_menu!)
+        if draft.empty?
+          bot.api.send_message(chat_id: chat_id, text: "#{menu_changes_text(changes)}🛒 Корзина пуста. /order для нового заказа.")
+          return
+        end
+
         text = <<~TEXT
-          📋 Подтверждение заказа:
-          
+          #{menu_changes_text(changes)}📋 Подтверждение заказа:
+
           #{draft.format_cart}
-          
+
           💬 Комментарий: #{draft.comment || '-'}
-          
+
           Подтвердить заказ?
         TEXT
 
-        keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-          inline_keyboard: [
-            [
-              Telegram::Bot::Types::InlineKeyboardButton.new(text: '✅ Да', callback_data: 'confirm_yes'),
-              Telegram::Bot::Types::InlineKeyboardButton.new(text: '❌ Нет', callback_data: 'confirm_no')
-            ]
-          ]
-        )
-
         bot.api.send_message(
-          chat_id: user_id,
+          chat_id: chat_id,
           text: text,
-          reply_markup: keyboard
+          reply_markup: Bot.confirm_keyboard
         )
+      end
+
+      # Note about cart lines changed by Draft#sync_with_menu!, empty if nothing changed
+      def menu_changes_text(changes)
+        lines = []
+        lines << "⚠️ Больше нет в наличии: #{changes[:removed].join(', ')}" if changes[:removed].any?
+        lines << "⚠️ Изменилась цена: #{changes[:repriced].join(', ')}" if changes[:repriced].any?
+        lines.empty? ? '' : "#{lines.join("\n")}\n\n"
       end
 
       def handle_confirm(callback, answer)
@@ -666,12 +693,28 @@ module CoffeeBot
           return
         end
 
-        # Create order
+        # A second tap on "✅ Да" after the order was created finds no draft
         draft = Draft.for_user(user_id)
+        if draft.nil? || draft.empty?
+          answer_callback(callback, text: 'Корзина пуста или заказ уже оформлен. /order для нового заказа.', show_alert: true)
+          return
+        end
+
+        # Prices or availability changed since the confirmation screen: confirm again
+        changes = draft.sync_with_menu!
+        if changes[:removed].any? || changes[:repriced].any?
+          send_confirmation(user_id, draft, changes)
+          return
+        end
+
         client = Client.find_or_create_from_message(callback)
 
         begin
           order = Services::OrderService.create_from_draft(draft, client)
+          unless order
+            bot.api.send_message(chat_id: user_id, text: '❌ Часть позиций больше недоступна. Проверьте корзину и оформите заказ заново.')
+            return
+          end
 
           # Create invoice
           invoice_data = Services::OrderService.create_invoice(order)
@@ -690,10 +733,11 @@ module CoffeeBot
           @notifier.send_payment_qr(order, invoice_data)
 
         rescue StandardError => e
-          log_error('Failed to create order', error: e.message)
+          # Details go to the log only: provider / internal messages are not for clients
+          log_error('Failed to create order', user_id: user_id, error: "#{e.class}: #{e.message}")
           bot.api.send_message(
             chat_id: user_id,
-            text: "❌ Ошибка при создании заказа: #{e.message}"
+            text: '❌ Не удалось создать счёт на оплату. Попробуйте ещё раз через минуту.'
           )
         end
       end
@@ -704,34 +748,11 @@ module CoffeeBot
         draft = Draft.for_user(chat_id)
 
         if draft
-          draft.set_comment('-')
+          draft.set_comment(nil)
           draft.set_step('confirm')
-
-          # Show confirmation directly with chat_id
-          text = <<~TEXT
-            📋 Подтверждение заказа:
-            
-            #{draft.format_cart}
-            
-            💬 Комментарий: -
-            
-            Подтвердить заказ?
-          TEXT
-
-          keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
-            inline_keyboard: [
-              [
-                Telegram::Bot::Types::InlineKeyboardButton.new(text: '✅ Да', callback_data: 'confirm_yes'),
-                Telegram::Bot::Types::InlineKeyboardButton.new(text: '❌ Нет', callback_data: 'confirm_no')
-              ]
-            ]
-          )
-
-          bot.api.send_message(
-            chat_id: chat_id,
-            text: text,
-            reply_markup: keyboard
-          )
+          send_confirmation(chat_id, draft)
+        else
+          answer_callback(callback, text: 'Корзина пуста. /order для нового заказа.')
         end
       end
 
@@ -1054,7 +1075,7 @@ module CoffeeBot
           bot.api.edit_message_text(
             chat_id: user_id,
             message_id: callback.message.message_id,
-            text: '🛒 Корзина пуста\n\nДобавьте товары из меню.'
+            text: "🛒 Корзина пуста\n\nДобавьте товары из меню."
           )
           return
         end
@@ -1217,19 +1238,35 @@ module CoffeeBot
           return
         end
         
-        # Create new draft from order items
+        # Create new draft from order items (same sizes; current prices; only available items)
         Draft.clear(user_id)
         draft = Draft.get_or_create(user_id)
-        
-        order.items.each do |order_item|
+        unavailable = []
+
+        order.order_items.each do |order_item|
           menu_item = MenuItem[order_item.menu_item_id]
-          draft.add_item(menu_item, order_item.quantity) if menu_item
+          if menu_item&.is_available
+            draft.add_item_with_size(menu_item, order_item.size, order_item.qty)
+          else
+            unavailable << order_item.item_name
+          end
         end
-        
+
+        note = unavailable.any? ? "\n\n⚠️ Больше нет в наличии: #{unavailable.join(', ')}" : ''
+
+        if draft.empty?
+          bot.api.edit_message_text(
+            chat_id: user_id,
+            message_id: callback.message.message_id,
+            text: "😔 Не удалось повторить заказ ##{order.id}: позиций больше нет в меню.#{note}"
+          )
+          return
+        end
+
         bot.api.edit_message_text(
           chat_id: user_id,
           message_id: callback.message.message_id,
-          text: "🔄 Заказ повторён!\n\n#{draft.format_cart}\n\n💰 Итого: #{draft.formatted_total}",
+          text: "🔄 Заказ повторён!\n\n#{draft.format_cart}#{note}",
           reply_markup: Bot.cart_keyboard
         )
       end
@@ -1314,16 +1351,19 @@ module CoffeeBot
           return
         end
         
-        # Add item with size to cart
+        # Add item with size to cart (crafted callbacks may carry any quantity)
         draft = Draft.get_or_create(user_id)
-        draft.add_item_with_size(item, size, qty)
-        
-        size_label = MenuItem::SIZE_LABELS[size]
-        
+        unless draft.add_item_with_size(item, size, qty)
+          answer_callback(callback, text: INVALID_QTY_TEXT, show_alert: true)
+          return
+        end
+
+        added_qty = [qty, Draft::MAX_QTY_PER_LINE].min
+
         bot.api.edit_message_text(
           chat_id: user_id,
           message_id: callback.message.message_id,
-          text: "✅ Добавлено: #{item.name} (#{size_label}) x#{qty}\n\n#{draft.format_cart}",
+          text: "✅ Добавлено: #{item.display_name_for_size(size)} x#{added_qty}\n\n#{draft.format_cart}",
           reply_markup: Bot.cart_keyboard
         )
       end

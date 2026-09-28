@@ -16,6 +16,12 @@ class Draft < Sequel::Model
     'comment' => nil
   }.freeze
 
+  # Crafted callbacks can carry any quantity: one cart line holds 1..MAX_QTY_PER_LINE
+  MAX_QTY_PER_LINE = 20
+
+  # Same limit as orders.comment
+  COMMENT_MAX_LENGTH = 200
+
   # Valid wizard steps
   STEPS = %w[
     select_category
@@ -106,18 +112,15 @@ class Draft < Sequel::Model
   # Add item to cart with size support
   # @param menu_item [MenuItem] The menu item
   # @param size [String, nil] Size key (small, medium, large) or nil
-  # @param qty [Integer] Quantity
+  # @param qty [Integer] Quantity (non-positive is rejected, the line is capped at MAX_QTY_PER_LINE)
+  # @return [Boolean] False if nothing was added
   def add_item_with_size(menu_item, size, qty)
+    qty = qty.to_i
+    return false unless qty.positive?
+
     current_items = items
     unit_price = menu_item.price_for_size(size)
-    
-    # Build display name with size if applicable
-    display_name = if size && menu_item.has_sizes?
-      size_label = MenuItem::SIZE_LABELS[size] || size.upcase
-      "#{menu_item.name} (#{size_label})"
-    else
-      menu_item.name
-    end
+    display_name = menu_item.display_name_for_size(size)
     
     # Check if item with same size already exists in cart
     existing = current_items.find do |i|
@@ -125,9 +128,10 @@ class Draft < Sequel::Model
     end
     
     if existing
-      existing['qty'] += qty
+      existing['qty'] = [existing['qty'] + qty, MAX_QTY_PER_LINE].min
       existing['line_total'] = existing['qty'] * existing['unit_price']
     else
+      qty = [qty, MAX_QTY_PER_LINE].min
       current_items << {
         'menu_item_id' => menu_item.id,
         'name' => menu_item.name,
@@ -140,6 +144,32 @@ class Draft < Sequel::Model
     end
     
     update_state('items' => current_items)
+    true
+  end
+
+  # Re-read prices and availability from the menu: prices may change and items may
+  # be switched off while the cart is open. Unavailable lines are removed.
+  #
+  # @return [Hash] :removed and :repriced - display names of the affected lines
+  def sync_with_menu!
+    removed = []
+    repriced = []
+
+    current_items = items.filter_map do |item|
+      name = item['display_name'] || item['name']
+      menu_item = MenuItem[item['menu_item_id']]
+      unless menu_item&.is_available
+        removed << name
+        next
+      end
+
+      unit_price = menu_item.price_for_size(item['size'])
+      repriced << name if unit_price != item['unit_price']
+      item.merge('unit_price' => unit_price, 'line_total' => unit_price * item['qty'].to_i)
+    end
+
+    update_state('items' => current_items) if removed.any? || repriced.any?
+    { removed: removed, repriced: repriced }
   end
 
   # Remove item from cart by index
@@ -152,7 +182,8 @@ class Draft < Sequel::Model
   # Update item quantity
   def update_item_qty(index, qty)
     current_items = items
-    if index >= 0 && index < current_items.length
+    if index >= 0 && index < current_items.length && qty.to_i.positive?
+      qty = [qty.to_i, MAX_QTY_PER_LINE].min
       current_items[index]['qty'] = qty
       current_items[index]['line_total'] = qty * current_items[index]['unit_price']
       update_state('items' => current_items)
@@ -175,9 +206,10 @@ class Draft < Sequel::Model
     state['comment']
   end
 
-  # Set comment
+  # Set comment (truncated to the orders.comment column size; blank -> no comment)
   def set_comment(text)
-    update_state('comment' => text)
+    text = text.to_s.strip
+    update_state('comment' => text.empty? ? nil : text[0, COMMENT_MAX_LENGTH])
   end
 
   # Clear cart

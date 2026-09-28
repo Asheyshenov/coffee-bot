@@ -81,31 +81,31 @@ class Order < Sequel::Model
   end
 
   # Create order from draft
+  # Prices and availability come from the menu at checkout time, not from the cart
+  # (the cart may be hours old). Zero-quantity lines are ignored.
+  #
+  # @return [Order, nil] nil if the cart is empty or has an item that is no longer available
   def self.create_from_draft(draft, client)
+    lines = checkout_lines(draft)
+    return nil if lines.nil? || lines.empty?
+
     order = nil
 
     DB.transaction do
       # Create the order with pre-generated merchant_invoice_id
-      order = create(
+      order = new(
         telegram_user_id: client.telegram_user_id,
         client_display_name: client.display_name,
         comment: draft.comment,
         status: OrderStatus::NEW,
-        total_amount: draft.total_amount,
+        total_amount: lines.sum { |line| line[:line_total] },
         currency: 'KGS',
         merchant_invoice_id: generate_merchant_invoice_id
-      )
+      ).save(raise_on_failure: true)
 
-      # Create order items from draft
-      draft.items.each do |item|
-        OrderItem.create(
-          order_id: order.id,
-          menu_item_id: item['menu_item_id'],
-          item_name: item['name'],
-          qty: item['qty'],
-          unit_price: item['unit_price'],
-          line_total: item['line_total']
-        )
+      # A line that fails validation rolls the whole order back instead of vanishing
+      lines.each do |line|
+        OrderItem.new(line.merge(order_id: order.id)).save(raise_on_failure: true)
       end
 
       # Increment client's order count
@@ -113,6 +113,32 @@ class Order < Sequel::Model
     end
 
     order
+  end
+
+  # Order lines priced from the current menu
+  #
+  # @return [Array<Hash>, nil] nil if an item is missing or unavailable
+  def self.checkout_lines(draft)
+    return nil unless draft
+
+    draft.items.filter_map do |item|
+      qty = item['qty'].to_i
+      next unless qty.positive?
+
+      menu_item = MenuItem[item['menu_item_id']]
+      return nil unless menu_item&.is_available
+
+      qty = [qty, Draft::MAX_QTY_PER_LINE].min
+      unit_price = menu_item.price_for_size(item['size'])
+      {
+        menu_item_id: menu_item.id,
+        item_name: menu_item.display_name_for_size(item['size']),
+        size: item['size'],
+        qty: qty,
+        unit_price: unit_price,
+        line_total: unit_price * qty
+      }
+    end
   end
 
   # Instance methods
@@ -319,11 +345,29 @@ class Order < Sequel::Model
   # @param staff_id [Integer] Telegram ID of the barista who made the refund
   # @return [Boolean] True only for the call that actually closed the refund
   def mark_refunded!(staff_id)
-    refunded = Payment.where(order_id: id, status: PaymentStatus::REFUND_REQUIRED)
-                      .update(status: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
-    return false unless refunded == 1
+    refunded = false
 
-    this.update(invoice_status_raw: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
+    DB.transaction do
+      payment = Payment.for_update.where(order_id: id, status: PaymentStatus::REFUND_REQUIRED).first
+      next unless payment
+
+      closed = Payment.where(id: payment.id, status: PaymentStatus::REFUND_REQUIRED)
+                      .update(status: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
+      next unless closed == 1
+
+      # Audit trail: who returned how much
+      PaymentOperation.new(
+        order_id: id,
+        operation_type: PaymentOperationType::REFUND,
+        amount: payment.paid_amount || total_amount,
+        status: PaymentOperationStatus::COMPLETED,
+        reason: "Late payment refunded manually by staff #{staff_id}"
+      ).save(raise_on_failure: true)
+      this.update(invoice_status_raw: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
+      refunded = true
+    end
+    return false unless refunded
+
     refresh
     log_info('Late payment refunded', order_id: id, staff_id: staff_id)
     true

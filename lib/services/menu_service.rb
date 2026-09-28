@@ -15,13 +15,33 @@ module CoffeeBot
         MenuItem.categories
       end
 
+      # Category names differ between menus ("Кофе", "☕ Кофе", "🥛 Добавки"):
+      # compare them without emoji, punctuation and case
+      #
+      # @return [String] e.g. "кофе"
+      def self.normalize_category(name)
+        name.to_s.gsub(/[^\p{L}\p{N}\s]/, '').squeeze(' ').strip.downcase
+      end
+
+      def self.same_category?(a, b)
+        normalize_category(a) == normalize_category(b)
+      end
+
+      # Category name as stored in the menu for a (possibly differently decorated) name
+      #
+      # @param name [String] e.g. "☕ Кофе" or "Кофе"
+      # @return [String, nil] Stored category name or nil if the menu has no such category
+      def self.find_category(name)
+        categories.find { |category| same_category?(category, name) }
+      end
+
       # Get all items in a category
       #
-      # @param category [String] Category name
+      # @param category [String] Category name (matched with #same_category?)
       # @param available_only [Boolean] Only return available items
       # @return [Array<MenuItem>] List of menu items
       def self.items_by_category(category, available_only: true)
-        items = MenuItem.by_category(category)
+        items = MenuItem.by_category(find_category(category) || category)
         items = items.available if available_only
         items.all
       end
@@ -267,6 +287,7 @@ module CoffeeBot
             Sequel.function(:count, Sequel.qualify(:order_items, :id)).as(:order_count)
           )
           .left_join(:order_items, menu_item_id: :id)
+          .where(Sequel.qualify(:menu_items, :is_available) => true)
           .group_by(Sequel.qualify(:menu_items, :id))
           .order(Sequel.desc(:order_count))
           .limit(5)
@@ -277,7 +298,10 @@ module CoffeeBot
       #
       # @return [Array<MenuItem>] List of addon items
       def self.addons
-        MenuItem.where(category: 'Добавки', is_available: true).all
+        category = find_category('Добавки')
+        return [] unless category
+
+        MenuItem.where(category: category, is_available: true).all
       end
     end
   end

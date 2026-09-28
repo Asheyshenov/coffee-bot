@@ -9,7 +9,8 @@ require 'bigdecimal'
 
 class Payment < Sequel::Model
   many_to_one :order
-  one_to_many :payment_operations
+  # payment_operations references the order (migration 007), not the payment
+  one_to_many :payment_operations, key: :order_id, primary_key: :order_id
 
   # Parse an amount reported by a provider (tyiyn, same unit as orders.total_amount).
   # Accepts Integer, Float/BigDecimal and numeric strings: "15000", "15000.00", "15 000,00".
@@ -63,7 +64,7 @@ class Payment < Sequel::Model
 
   # Calculate total refunded amount
   def total_refunded
-    payment_operations
+    payment_operations_dataset
       .where(operation_type: PaymentOperationType::REFUND, status: PaymentOperationStatus::COMPLETED)
       .sum(:amount) || 0
   end

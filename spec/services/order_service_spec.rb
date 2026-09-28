@@ -6,7 +6,7 @@ RSpec.describe 'Order calculations and lifecycle' do
   describe 'Order total calculation' do
     it 'calculates total from order items' do
       client = create_test_client
-      order = create_test_order(client, amount: 0)
+      order = create_test_order(client, amount: 42_000)
 
       # Add items
       OrderItem.create(order_id: order.id, item_name: 'Капучино', qty: 2, unit_price: 15_000, line_total: 30_000)
