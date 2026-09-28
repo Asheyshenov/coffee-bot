@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_28_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_28_000004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -85,6 +85,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_28_000003) do
     t.integer "position", default: 0, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.text "description"
     t.index ["tenant_id", "category", "position"], name: "index_menu_items_on_tenant_id_and_category_and_position"
     t.index ["tenant_id"], name: "index_menu_items_on_tenant_id"
     t.check_constraint "price > 0", name: "menu_items_price_check"
@@ -133,6 +134,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_28_000003) do
     t.datetime "assigned_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.text "payment_app_url"
     t.index ["customer_id"], name: "index_orders_on_customer_id"
     t.index ["merchant_invoice_id"], name: "index_orders_on_merchant_invoice_id", unique: true
     t.index ["payment_account_id", "invoice_id_provider"], name: "index_orders_on_payment_account_id_and_invoice_id_provider", unique: true, where: "(invoice_id_provider IS NOT NULL)"
