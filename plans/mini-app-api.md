@@ -88,6 +88,19 @@ The comment is optional and truncated to 200 characters. Order of operations:
 ### `POST /api/orders/:id/cancel`
 Runs `OrderService.cancel_by_client`. Returns `{"outcome":"cancelled"|"cancelled_locally"|"paid_now"|"already_paid"|"in_progress"|"payment_problem"|"not_cancellable","order":{...}}`, and triggers the same winner-only notifications as `/cancel` in the chat.
 
+### Implementation notes
+Details the implementation settles (`app/controllers/mini_app/api`):
+- Checks run in this order: 404 bot, 503 shop, 401 initData. initData whose `user` has no integer `id` is 401.
+- Extra error codes: `400 bad_request` for a malformed JSON body, `422 invalid_comment` when `comment` is not a string, `500 internal_error`.
+- Cart mutations answer `200` with the cart.
+- `POST /api/cart/items`:
+  - `qty` defaults to 1 when the key is absent. A present but non-integer `qty` (`1.5`, `"x"`, `null`) is `invalid_qty`.
+  - `size: null` on an item with sizes means its `default_size`, as `GET /api/shop` reports it. A size on an item without sizes is `item_unavailable`.
+- `PATCH /api/cart/items/:index` accepts `qty` 0..20 only. Anything else is `422 invalid_qty`; the value is not capped.
+- `GET /api/shop`: `price` of an item with sizes is the price of its `default_size`.
+- `POST /api/orders`: without a `comment` key, the cart keeps its comment (e.g. one typed in the chat). `null` or blank clears it.
+- The `payment` key is always there: `null` unless the order is `INVOICE_CREATED`.
+
 ## Page `GET /app/:bot_id`
 - 404 for an unknown or inactive bot. The page doesn't need initData: the hash fragment `#tgWebAppData` is never sent to the server.
 - Telegram Desktop and Web embed Mini Apps in an iframe, so these responses drop `X-Frame-Options` and send `Content-Security-Policy: frame-ancestors https://web.telegram.org https://*.telegram.org`.

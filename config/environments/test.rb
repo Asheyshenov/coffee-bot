@@ -55,4 +55,7 @@ Rails.application.configure do
   config.active_record.encryption.primary_key = "test-primary-key-0123456789abcdef"
   config.active_record.encryption.deterministic_key = "test-deterministic-key-0123456789"
   config.active_record.encryption.key_derivation_salt = "test-key-derivation-salt-01234567"
+
+  # Rate limits need a real store (the test cache store is :null_store)
+  config.x.rate_limit_store = ActiveSupport::Cache::MemoryStore.new
 end

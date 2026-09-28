@@ -15,11 +15,27 @@ class Customer < ApplicationRecord
   #
   # @param user [Telegram::Bot::Types::User]
   def self.from_telegram(user)
-    customer = find_by(telegram_user_id: user.id) || create_or_find_by!(telegram_user_id: user.id)
-    customer.update!(username: user.username, first_name: user.first_name, last_name: user.last_name,
-                     language_code: user.language_code)
+    with_profile(user.id, username: user.username, first_name: user.first_name, last_name: user.last_name,
+                          language_code: user.language_code)
+  end
+
+  # Same for the "user" object of verified Mini App initData (see TelegramInitData)
+  #
+  # @param user [Hash] "id" (Integer), "username", "first_name", "last_name", "language_code"
+  def self.from_init_data_user(user)
+    profile = %w[username first_name last_name language_code].to_h do |field|
+      value = user[field]
+      [ field.to_sym, value.is_a?(String) ? value : nil ]
+    end
+    with_profile(user.fetch("id"), **profile)
+  end
+
+  def self.with_profile(telegram_user_id, **profile)
+    customer = find_by(telegram_user_id: telegram_user_id) || create_or_find_by!(telegram_user_id: telegram_user_id)
+    customer.update!(profile)
     customer
   end
+  private_class_method :with_profile
 
   # Name shown to baristas
   def display_name

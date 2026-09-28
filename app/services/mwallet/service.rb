@@ -54,7 +54,7 @@ module MWallet
     # On success the status polling and the expiry jobs are scheduled.
     #
     # @return [Hash] :invoice_id, :qr_url, :paylink_url, :emv_qr_url, :qr_image_base64,
-    #   :emv_qr_data, :expires_at, :raw_response
+    #   :emv_qr_data, :app_url (O!Dengi app deep link), :expires_at, :raw_response
     # @raise [MWalletError::Base] provider error (a NEW order is moved to ERROR)
     # @raise [Order::InvalidStatusTransition] the order can't get an invoice (paid, cancelled, overdue...)
     def create_invoice_for_order(order)
@@ -273,7 +273,8 @@ module MWallet
     # (e.g. was cancelled) while the invoice was being created
     def store_invoice!(order, invoice_data)
       moved = Order.transaction do
-        order.assign_attributes(provider: PROVIDER, payment_account: payment_account)
+        order.assign_attributes(provider: PROVIDER, payment_account: payment_account,
+                                payment_app_url: invoice_data[:app_url])
         order.set_invoice_data(invoice_data) # saves the attributes above too
         Order.where(id: order.id, status: [ OrderStatus::NEW, OrderStatus::INVOICE_CREATED ])
              .update_all(status: OrderStatus::INVOICE_CREATED, updated_at: Time.current) == 1
@@ -448,6 +449,7 @@ module MWallet
         emv_qr_url: data[:emv_qr], # URL of the QR image
         qr_image_base64: data[:emv_qr_img],
         emv_qr_data: data[:emv_qr_data],
+        app_url: data[:link_app], # opens the invoice in the O!Dengi app
         raw_response: response.to_json
       }
     end
@@ -460,6 +462,7 @@ module MWallet
         emv_qr_url: order.emv_qr_url,
         qr_image_base64: order.qr_image_base64,
         emv_qr_data: order.qr_payload,
+        app_url: order.payment_app_url,
         expires_at: order.expires_at,
         raw_response: order.raw_create_response
       }
