@@ -73,7 +73,7 @@ class Order < ApplicationRecord
       menu_item = MenuItem.find_by(id: item["menu_item_id"])
       return nil unless menu_item&.available?
 
-      qty = [qty, Draft::MAX_QTY_PER_LINE].min
+      qty = [ qty, Draft::MAX_QTY_PER_LINE ].min
       unit_price = menu_item.price_for_size(item["size"])
       {
         menu_item: menu_item,
@@ -138,7 +138,7 @@ class Order < ApplicationRecord
 
   # Cancel an unpaid order locally (NEW / INVOICE_CREATED only)
   def cancel_unpaid!
-    changed = self.class.where(id: id, status: [OrderStatus::NEW, OrderStatus::INVOICE_CREATED])
+    changed = self.class.where(id: id, status: [ OrderStatus::NEW, OrderStatus::INVOICE_CREATED ])
                         .update_all(status: OrderStatus::CANCELLED, updated_at: Time.current)
     reload
     changed == 1
@@ -166,7 +166,7 @@ class Order < ApplicationRecord
     previous_status = nil
 
     transaction do
-      previous_status = atomic_status_change!([OrderStatus::INVOICE_CREATED], OrderStatus::PAID)
+      previous_status = atomic_status_change!([ OrderStatus::INVOICE_CREATED ], OrderStatus::PAID)
       next unless previous_status
 
       save_payment_record!(
@@ -252,7 +252,7 @@ class Order < ApplicationRecord
     previous_status = nil
 
     transaction do
-      previous_status = atomic_status_change!([OrderStatus::INVOICE_CREATED], OrderStatus::ERROR,
+      previous_status = atomic_status_change!([ OrderStatus::INVOICE_CREATED ], OrderStatus::ERROR,
                                               invoice_status_raw: reason.to_s[0, 255])
       next unless previous_status
 
@@ -271,6 +271,10 @@ class Order < ApplicationRecord
 
   def invoice_expired? = expires_at.present? && Time.current > expires_at
 
+  # An unpaid invoice is closed this long after the order was created (tenant setting)
+  def payment_deadline = created_at + tenant.order_expire_minutes.minutes
+  def payment_deadline_passed? = Time.current >= payment_deadline
+
   def formatted_total = format("%d KGS", total_amount.to_i / 100)
   def display_status = OrderStatus.display_name(status)
 
@@ -278,20 +282,20 @@ class Order < ApplicationRecord
   def format_short_summary = order_items.map(&:short_format).join(", ")
 
   def format_for_client
-    lines = ["☕ Заказ ##{id}", "Статус: #{display_status}", "", "Позиции:"]
+    lines = [ "☕ Заказ ##{id}", "Статус: #{display_status}", "", "Позиции:" ]
     order_items.each { |item| lines << "  • #{item.item_name} x#{item.qty} = #{item.line_total / 100} KGS" }
-    lines += ["", "Итого: #{formatted_total}"]
-    lines += ["", "Комментарий: #{comment}"] if comment.present?
+    lines += [ "", "Итого: #{formatted_total}" ]
+    lines += [ "", "Комментарий: #{comment}" ] if comment.present?
     lines.join("\n")
   end
 
   def format_for_barista
     local_time = created_at.in_time_zone(tenant&.time_zone || Time.zone)
-    lines = ["━━━━━━━━━━━━━━━━━━━━━━", "☕ Заказ ##{id}", "🕐 #{local_time.strftime('%H:%M')}", "👤 #{client_display_name}", "",
-             "Позиции:"]
+    lines = [ "━━━━━━━━━━━━━━━━━━━━━━", "☕ Заказ ##{id}", "🕐 #{local_time.strftime('%H:%M')}", "👤 #{client_display_name}", "",
+             "Позиции:" ]
     order_items.each { |item| lines << "  • #{item.item_name} x#{item.qty}" }
-    lines += ["", "💰 #{formatted_total}"]
-    lines += ["", "📝 #{comment}"] if comment.present?
+    lines += [ "", "💰 #{formatted_total}" ]
+    lines += [ "", "📝 #{comment}" ] if comment.present?
     lines << "━━━━━━━━━━━━━━━━━━━━━━"
     lines.join("\n")
   end

@@ -21,7 +21,10 @@ class PaymentAccount < ApplicationRecord
   end
 
   # HTTP client configured with this merchant's credentials
-  def mwallet_client
-    MWallet::Client.new(base_url: base_url, sid: sid, password: password, version: api_version, test_mode: test_mode)
+  #
+  # @param options [Hash] client overrides, e.g. timeout: / retry_count: for background jobs
+  def mwallet_client(**options)
+    MWallet::Client.new(base_url: base_url, sid: sid, password: password, version: api_version, test_mode: test_mode,
+                        **options)
   end
 end
