@@ -35,16 +35,14 @@ RSpec.configure do |config|
   config.include TenancyHelpers
   config.include TelegramUpdateHelpers
 
-  # The tenant is created in its own transaction that is always rolled back: `around`
-  # runs outside the transactional-fixture transaction (opened in a before hook),
-  # so without it every example would leave a tenant, bot and account behind.
-  config.around do |example|
-    ActiveRecord::Base.transaction(requires_new: true) do
-      tenant = create_tenant
-      ActsAsTenant.with_tenant(tenant) { example.run }
-      raise ActiveRecord::Rollback
-    end
-  ensure
+  # before/after (not around): they run inside the transactional-fixture transaction,
+  # so the tenant is rolled back, and after rspec-rails resets CurrentAttributes
+  # (where acts_as_tenant keeps the current tenant) in request specs.
+  config.before do
+    ActsAsTenant.current_tenant = create_tenant
+  end
+
+  config.after do
     ActsAsTenant.current_tenant = nil
   end
 
