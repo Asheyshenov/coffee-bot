@@ -61,7 +61,7 @@ module MWallet
     # @return [Hash] Response from the API
     def cancel_invoice(invoice_id)
       request_params = {
-        'cmd' => 'InvoiceCancel',
+        'cmd' => 'invoiceCancel', # case-sensitive: 'InvoiceCancel' -> "Команда не определена"
         'version' => @version,
         'sid' => @sid,
         'mktime' => Time.now.to_i.to_s,
@@ -69,12 +69,12 @@ module MWallet
         'data' => { 'invoice_id' => invoice_id }
       }
 
-      log_request('InvoiceCancel', request_params)
+      log_request('invoiceCancel', request_params)
 
       signed_params = @signer.build_signed_request(request_params)
       response = with_retry { @connection.post('/api/json/json.php', signed_params) }
 
-      handle_response(response, 'InvoiceCancel')
+      handle_response(response, 'invoiceCancel')
     end
 
     # Verify callback signature

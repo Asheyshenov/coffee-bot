@@ -139,7 +139,7 @@ module MWallet
     end
 
     # Cancel invoice for order
-    # Calls InvoiceCancel API and updates order status
+    # Calls invoiceCancel API and updates order status
     #
     # @param order [Order] The order to cancel
     # @return [Boolean] True if cancelled successfully

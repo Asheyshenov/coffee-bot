@@ -44,7 +44,7 @@ module OrderStatus
   TERMINAL = [READY, CANCELLED, EXPIRED].freeze
 
   # Late payment: the customer was charged after the invoice expired / order was cancelled
-  # (MWallet has no InvoiceCancel, so the QR stays payable). The order is NOT fulfilled:
+  # (e.g. invoiceCancel failed and the QR stayed payable). The order is NOT fulfilled:
   # it keeps its status and the payment is recorded as PaymentStatus::REFUND_REQUIRED.
   LATE_PAYMENT = [EXPIRED, CANCELLED].freeze
 
