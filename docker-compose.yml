@@ -1,0 +1,66 @@
+# Coffee Bot SaaS, self-hosted: docker compose up -d --build
+#
+# Two containers: Postgres (not published to the host) and the app. The app container
+# runs db:prepare on start, serves Telegram webhooks and O!Dengi callbacks (Thruster on
+# port 80 -> Puma), and runs the Solid Queue jobs inside Puma.
+# Settings come from .env next to this file (see .env.example); required ones fail fast.
+# Onboarding: docker compose exec app bin/rails tenants:list (see README).
+
+name: coffee-bot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: coffee_bot
+      POSTGRES_USER: coffee
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Not published: reachable only from this stack.
+    # psql / backups: docker compose exec postgres pg_dump -U coffee coffee_bot > backup.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coffee -d coffee_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: coffee-bot:latest
+    env_file: .env
+    environment:
+      # Keep POSTGRES_PASSWORD URL-safe (letters and digits): it is embedded into this URL
+      DATABASE_URL: postgres://coffee:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/coffee_bot
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env (public HTTPS URL of this app)}
+      # Losing these keys makes stored bot tokens and MWallet passwords unreadable
+      ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: ${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY:?Set ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY in .env}
+      ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: ${ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY:?Set ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY in .env}
+      ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: ${ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT:?Set ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT in .env}
+      # One container is enough for the first coffee shops: jobs run inside Puma
+      SOLID_QUEUE_IN_PUMA: "true"
+      # Wins over a RACK_ENV=development left in .env by the old app
+      RACK_ENV: production
+    ports:
+      # Default: loopback only, for a reverse proxy or tunnel on this host that terminates HTTPS.
+      # Thruster can terminate HTTPS itself (Let's Encrypt): set TLS_DOMAIN in .env and
+      # publish "80:80" and "443:443" instead.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:80"
+    volumes:
+      - storage:/rails/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Puma directly (Thruster may redirect to HTTPS); /up skips the host check
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:3000/up"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  storage:

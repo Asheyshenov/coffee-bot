@@ -1,345 +1,123 @@
-# ☕ Coffee Bot
+# Coffee Bot
 
-Production-ready Telegram bot для заказа кофе с интеграцией O!Деньги QRPay API.
+Telegram-бот для заказа кофе с оплатой по QR через O!Деньги (MWallet). Сервис
+мультиарендный (SaaS): у каждой кофейни свой Telegram-бот, свой мерчант-аккаунт
+O!Деньги, своё меню и свой персонал. Деньги поступают напрямую на договор кофейни.
 
-## 🚀 Возможности
+Старое приложение на Sinatra (одна кофейня, long polling) лежит в `legacy/` только
+для справки. Целевая архитектура и план перехода описаны в `plans/saas-architecture.md`.
 
-- **Заказ через Telegram** - Интерактивный мастер заказа с категориями и корзиной
-- **Оплата через QRPay** - Генерация QR-кода для оплаты через O!Деньги
-- **Панель баристы** - Управление очередью заказов (только для авторизованных)
-- **Уведомления** - Автоматические уведомления клиентов о статусе заказа
-- **Меню** - Гибкое управление меню с категориями
+## Архитектура
 
-## 📋 Статусы заказа
+- Rails 8.1 + PostgreSQL. База одна: данные, очередь задач (Solid Queue), кэш (Solid Cache), Action Cable (Solid Cable).
+- Входящие запросы: `POST /tg/:bot_id` (webhook Telegram, проверяется `X-Telegram-Bot-Api-Secret-Token`), `POST /pay/mwallet/:payment_account_id` (callback O!Деньги), `GET /up` (health check).
+- Обработчики только ставят задачи. Всё, что ходит во внешние API (сообщения, опрос оплат, истечение счетов), выполняют задачи Solid Queue.
+- Кофейня (`Tenant`) определяется по боту или платёжному аккаунту из URL. `acts_as_tenant` с `require_tenant` не пропускает запрос без арендатора.
+- Токены ботов и пароли MWallet хранятся зашифрованными (Active Record Encryption, ключи из ENV).
 
-```
-NEW → INVOICE_CREATED → PAID → IN_PROGRESS → READY
-                ↓           ↓
-             EXPIRED    CANCELLED
-```
+## Локальный запуск
 
-## 🛠 Установка
-
-### Требования
-
-- Ruby 3.2 + Bundler
-- SQLite3 (разработка) или PostgreSQL (продакшн)
-- Telegram Bot Token (от @BotFather)
-- Аккаунт MWallet (O!Деньги): SID и пароль сервиса
-- Для продакшна: Docker с Compose v2 (`docker compose`)
-
-### Быстрый старт (SQLite)
-
-1. **Клонируйте репозиторий**
-   ```bash
-   git clone https://github.com/your-repo/coffee-bot.git
-   cd coffee-bot
-   ```
-
-2. **Установите зависимости**
-   ```bash
-   bundle install
-   ```
-
-3. **Создайте .env файл**
-   ```bash
-   cp .env.example .env
-   # Отредактируйте .env с вашими настройками
-   ```
-
-4. **Примените миграции**
-   ```bash
-   bundle exec ruby bin/migrate
-   ```
-   В development (`RACK_ENV=development`) миграции дополнительно применяются
-   автоматически при старте. В любом другом окружении их нужно запускать
-   только через `bin/migrate`.
-
-5. **Заполните меню (опционально)**
-   ```ruby
-   # В консоли Ruby:
-   require_relative 'config/boot'
-   require_relative 'lib/services/menu_service'
-   CoffeeBot::Services::MenuService.seed_menu
-   ```
-
-6. **Запустите бота и сервер callbacks**
-   ```bash
-   bundle exec ruby bin/bot            # бот + фоновые задачи StatusSyncer и InvoiceExpirer
-   bundle exec ruby bin/callback_app   # Puma на порту PORT (по умолчанию 9292)
-   ```
-   Локально сервер callbacks слушает только `localhost`. Чтобы MWallet мог до него
-   достучаться, поднимите туннель (например, `cloudflared tunnel --url http://localhost:9292`)
-   и укажите его адрес в `PUBLIC_BASE_URL`.
-
-### Продакшн (Docker Compose + PostgreSQL)
-
-1. **Настройте .env** рядом с `docker-compose.yml`
-   ```bash
-   cp .env.example .env
-   ```
-   Обязательно заполните (без них `docker compose` сразу завершится с ошибкой):
-   ```bash
-   POSTGRES_PASSWORD=...        # только буквы и цифры: пароль подставляется в DATABASE_URL
-   TELEGRAM_BOT_TOKEN=...
-   BARISTA_WHITELIST=123456789,987654321
-   MWALLET_SID=...
-   MWALLET_PASSWORD='...'
-   PUBLIC_BASE_URL=https://your-domain.com
-   MWALLET_TEST_MODE=false      # для реальных платежей (по умолчанию true, песочница)
-   ```
-   `DATABASE_URL` и `RACK_ENV=production` compose задаёт сам.
-
-2. **Соберите образ и запустите**
-   ```bash
-   docker compose up -d --build
-   ```
-   Порядок запуска:
-   - `postgres` стартует и проходит healthcheck;
-   - одноразовый сервис `migrate` выполняет `bin/migrate` и завершается;
-   - `bot` и `callback` стартуют только после успешных миграций, поэтому
-     не соревнуются между собой за миграции. Если миграция упала, они не запустятся:
-     смотрите `docker compose logs migrate`.
-
-   Миграции выполняются при каждом `docker compose up`. Запустить их вручную:
-   ```bash
-   docker compose run --rm migrate
-   ```
-
-3. **Настройте HTTPS.** Сервер callbacks (Puma) слушает `0.0.0.0:9292` внутри контейнера,
-   порт 9292 опубликован на хосте. Поставьте перед ним reverse proxy с TLS (nginx, Caddy)
-   или туннель и укажите внешний адрес в `PUBLIC_BASE_URL`. MWallet отправляет callbacks
-   на `PUBLIC_BASE_URL/callbacks/mwallet/result`. В production сервер принимает
-   запросы только с хостом из `PUBLIC_BASE_URL`: proxy должен передавать исходный
-   заголовок `Host`.
-
-4. **База данных** наружу не публикуется: она доступна только контейнерам этого стека.
-   ```bash
-   docker compose exec postgres psql -U coffee coffee_bot
-   ```
-   Если нужен доступ с хоста, раскомментируйте в `docker-compose.yml`
-   `ports: "127.0.0.1:5432:5432"` (только loopback).
-
-Образ собирается без `vendor/`, `.bundle/`, `.env` и локальных баз SQLite
-в любых каталогах, включая `db/development.sqlite3` (см. `.dockerignore`).
-Если такой файл всё же попадёт в контекст сборки, `docker build` завершится
-с ошибкой. Гемы ставятся в `/usr/local/bundle` внутри образа.
-
-В `.dockerignore` шаблон сопоставляется с корнем контекста: `*.db` исключает
-только `./coffee.db`, но не `db/coffee.db`. Для файлов в подкаталогах нужен
-префикс `**/`.
-
-## ⚙️ Конфигурация
-
-### Обязательные переменные
-
-| Переменная | Описание |
-|------------|----------|
-| `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather |
-| `BARISTA_WHITELIST` | Telegram ID барист (через запятую) |
-| `MWALLET_SID` | ID сервиса MWallet |
-| `MWALLET_PASSWORD` | Пароль сервиса MWallet (подпись запросов и callbacks) |
-| `PUBLIC_BASE_URL` | Публичный HTTPS-адрес сервера callbacks (обязателен в продакшне) |
-| `POSTGRES_PASSWORD` | Пароль PostgreSQL (только для docker-compose) |
-
-### Опциональные переменные
-
-| Переменная | По умолчанию | Описание |
-|------------|--------------|----------|
-| `DATABASE_URL` | `sqlite://db/development.sqlite3` | URL базы данных (в docker-compose задаётся автоматически) |
-| `RACK_ENV` | `development` | Окружение; в docker-compose `production` |
-| `PORT` | `9292` | Порт сервера callbacks (`bin/callback_app`) |
-| `ORDER_EXPIRE_MINUTES` | `15` | Минуты до истечения неоплаченного счёта |
-| `MWALLET_BASE_URL` | `https://mw-api-test.dengi.kg/api/json/json.php` | URL API MWallet |
-| `MWALLET_TEST_MODE` | `true` | Тестовые счета; `false` для реальных платежей |
-| `MWALLET_API_VERSION` | `1005` | Версия API MWallet |
-| `MWALLET_TIMEOUT_SECONDS` | `30` | Таймаут запросов к MWallet |
-| `MWALLET_RETRY_COUNT` | `3` | Количество повторов при сетевых ошибках |
-| `TUNNEL_HOSTS` | `.trycloudflare.com` | Разрешённые хосты туннелей (только development) |
-
-### Фоновые задачи
-
-Задачи запускаются внутри `bin/bot`:
-
-- **StatusSyncer** (каждые 2 с) опрашивает MWallet по неоплаченным счетам на случай,
-  если callback не дошёл.
-- **InvoiceExpirer** (каждые 60 с) обрабатывает счета старше `ORDER_EXPIRE_MINUTES`.
-  Сначала ещё раз проверяет оплату: если счёт оплачен, заказ уходит баристам.
-  Иначе отменяет счёт в MWallet, переводит заказ в `EXPIRED` и сообщает клиенту.
-
-## 🤖 Команды бота
-
-### Клиентские команды
-
-| Команда | Описание |
-|---------|----------|
-| `/start` | Начать работу с ботом |
-| `/menu` | Посмотреть меню |
-| `/order` | Сделать заказ |
-| `/my_orders` | Мои заказы |
-| `/cancel` | Отменить текущий заказ |
-| `/help` | Справка |
-
-### Команды баристы
-
-| Команда | Описание |
-|---------|----------|
-| `/barista` | Открыть панель баристы |
-
-## 👨‍🍳 Добавление баристы
-
-1. Узнайте Telegram ID пользователя (через @userinfobot)
-2. Добавьте ID в `BARISTA_WHITELIST` в .env:
-   ```
-   BARISTA_WHITELIST=123456789,987654321
-   ```
-3. Перезапустите бота
-
-## 📝 Управление меню
-
-### Через консоль Ruby
-
-```ruby
-require_relative 'config/boot'
-
-# Создать категорию и товар
-CoffeeBot::Services::MenuService.create_item(
-  category: 'Кофе',
-  name: 'Капучино',
-  price: 15000  # 150.00 KGS (в тыйынах!)
-)
-
-# Скрыть товар
-CoffeeBot::Services::MenuService.toggle_availability(1)
-
-# Удалить товар
-CoffeeBot::Services::MenuService.delete_item(1)
-
-# Заполнить тестовое меню
-CoffeeBot::Services::MenuService.seed_menu
-```
-
-### Через SQL
-
-```sql
--- Добавить товар
-INSERT INTO menu_items (category, name, price, currency, is_available)
-VALUES ('Кофе', 'Латте', 16000, 'KGS', 1);
-
--- Скрыть товар
-UPDATE menu_items SET is_available = 0 WHERE id = 1;
-```
-
-## 🧪 Тестирование QRPay (Sandbox)
-
-1. Используйте sandbox URL в конфигурации:
-   ```
-   QRPAY_BASE_URL=https://sandbox-api.odengi.kg
-   ```
-
-2. Создайте заказ и получите тестовый счёт
-
-3. Для симуляции оплаты используйте тестовые карты O!Деньги
-
-4. Callback придёт на `/callbacks/odengi/qrpay/result`
-
-## 📁 Структура проекта
-
-```
-coffee-bot/
-├── bin/
-│   ├── bot              # Точка входа Telegram бота (+ фоновые задачи)
-│   ├── callback_app     # HTTP сервер для callbacks (Puma, PORT)
-│   └── migrate          # Применение миграций БД
-├── config/
-│   ├── boot.rb          # Загрузка конфигурации
-│   └── database.rb      # Подключение к БД
-├── db/
-│   ├── migrations/      # Миграции Sequel
-│   └── schema.rb        # Схема БД
-├── lib/
-│   ├── bot/
-│   │   └── router.rb    # Диспетчер команд
-│   ├── models/          # Sequel модели
-│   ├── services/        # Бизнес-логика
-│   │   ├── auth_service.rb
-│   │   ├── menu_service.rb
-│   │   ├── order_service.rb
-│   │   ├── notifier.rb
-│   │   └── qrpay/       # QRPay интеграция
-│   ├── http/
-│   │   └── callback_app.rb
-│   └── jobs/            # Фоновые задачи (StatusSyncer, InvoiceExpirer)
-├── spec/                # Тесты RSpec
-├── .env.example         # Пример конфигурации
-├── .dockerignore        # Что не попадает в Docker-образ
-├── docker-compose.yml
-├── Dockerfile
-└── Gemfile
-```
-
-## 🔧 Устранение неполадок
-
-### Ошибка подписи QRPay
-
-- Проверьте `QRPAY_SECRET_KEY`
-- Убедитесь, что часовой пояс сервера корректный
-- Проверьте порядок полей в подписи
-
-### Дублирование callbacks
-
-- Callbacks логируются в таблицу `callback_logs`
-- Дубликаты автоматически определяются по `event_id` или `dedupe_key`
-
-### Неизвестный invoice в callback
-
-- Проверьте, что `merchantInvoiceId` совпадает с заказом
-- Заказ должен быть в статусе `INVOICE_CREATED`
-
-### Бот не отвечает
-
-- Проверьте `TELEGRAM_BOT_TOKEN`
-- Убедитесь, что бот запущен без ошибок
-- Проверьте логи на наличие исключений
-
-## 📊 Мониторинг
-
-### Health check
+Нужны Ruby из `.ruby-version` и PostgreSQL 16. Текущему пользователю ОС нужен доступ к
+Postgres с правом создавать базы (`createuser -s $USER`).
 
 ```bash
-# development
-curl http://localhost:9292/health
-
-# production: разрешён только хост из PUBLIC_BASE_URL
-curl https://your-domain.com/health
-curl -H "Host: your-domain.com" http://localhost:9292/health   # с сервера, в обход proxy
+bin/setup   # гемы, .env из .env.example, ключи шифрования, БД, демо-кофейня; затем bin/dev
+bin/dev     # web на :3000 + сборка Tailwind + обработчик задач (bin/jobs), см. Procfile.dev
 ```
 
-В docker-compose у сервиса `callback` настроен healthcheck по `/health`
-(`docker compose ps` показывает `healthy`).
+`bin/setup` сам создаёт `.env` и заполняет пустые `ACTIVE_RECORD_ENCRYPTION_*`. Готовые
+значения он не трогает и не печатает. Остальные переменные описаны в `.env.example`.
+`db/seeds.rb` создаёт кофейню `demo` с фейковыми токеном и паролем, поэтому с Telegram она
+не работает. Для живого теста подключите свой тестовый бот, как описано ниже.
 
-### Логи
+### Webhooks локально
 
-Логи выводятся в JSON формате в продакшн:
-
-```json
-{"timestamp":"2024-01-15T10:30:00.000Z","level":"INFO","message":"Order created","order_id":123}
-```
-
-## 🧪 Запуск тестов
+Telegram и O!Деньги обращаются только к публичному HTTPS-адресу, поэтому нужен туннель:
 
 ```bash
+cloudflared tunnel --url http://localhost:3000   # или: ngrok http 3000
+```
+
+Пропишите адрес туннеля в `.env` и перезапустите `bin/dev`:
+
+```bash
+PUBLIC_BASE_URL=https://xxxx.trycloudflare.com
+RAILS_DEVELOPMENT_HOSTS=.trycloudflare.com,.ngrok-free.app
+```
+
+Затем заново выполните `tenants:connect_bot`, чтобы Telegram получил новый адрес webhook.
+Адрес быстрого туннеля меняется при каждом запуске.
+
+## Подключение кофейни
+
+До появления админки кофейни подключаются rake-задачами. Любую задачу можно запускать
+повторно: результат не изменится. Секреты задачи не печатают. Аргументы берите в кавычки
+(zsh), запятые внутри аргументов не поддерживаются. В Docker перед командой добавьте
+`docker compose exec app`.
+
+Что нужно от владельца кофейни:
+- токен бота, созданного в @BotFather;
+- SID и пароль сервиса MWallet по договору кофейни с O!Деньги;
+- Telegram ID сотрудников (узнать можно у @userinfobot).
+
+```bash
+bin/rails "tenants:create[corner,Кофейня на углу]"              # slug: латиница, цифры, дефис
+bin/rails "tenants:connect_mwallet[corner,SID,PASSWORD,true]"   # true: тестовый API, false: боевой
+bin/rails "tenants:add_staff[corner,123456789,owner]"           # роли: owner, manager, barista (по умолчанию)
+bin/rails "tenants:add_staff[corner,987654321]"
+bin/rails "tenants:seed_menu[corner]"                           # стандартное меню, если меню пустое
+bin/rails "tenants:connect_bot[corner,123456:ABC-DEF]"          # последним шагом: после него бот принимает заказы
+bin/rails tenants:list                                          # статус, бот, SID (маскирован), персонал, открытые заказы
+bin/rails "tenants:remove_staff[corner,987654321]"              # отключить сотрудника (add_staff вернёт его)
+```
+
+- Для `connect_bot` адрес `PUBLIC_BASE_URL` должен быть публичным HTTPS: задача вызывает `getMe` и `setWebhook`.
+- Боевой режим MWallet (`false`) требует `MWALLET_PRODUCTION_BASE_URL`. Точный URL боевого API нужно подтвердить у O!Деньги.
+- При смене SID старый аккаунт отключается, но не удаляется: его заказы и callback'и продолжают работать.
+- Чтобы токен не попал в историю shell, прочитайте его в переменную: `read -rs TOKEN`, затем `bin/rails "tenants:connect_bot[corner,$TOKEN]"`.
+
+### Перенос текущей кофейни из legacy
+
+1. Остановите старого бота: webhook и polling одного бота одновременно работать не могут. Старый callback-сервер оставьте, пока не оплачены или не истекли открытые счета.
+2. Положите в `.env` старые переменные: `TELEGRAM_BOT_TOKEN`, `MWALLET_SID`, `MWALLET_PASSWORD`, `MWALLET_TEST_MODE`, `BARISTA_WHITELIST`, `ORDER_EXPIRE_MINUTES`. Затем выполните:
+   ```bash
+   bin/rails "tenants:import_legacy_env[main,Название кофейни]"
+   bin/rails "tenants:seed_menu[main]"
+   ```
+   Задача создаёт кофейню, её MWallet-аккаунт и барист, а бота подключает последним. Заказы и меню старой базы не переносятся.
+3. Удалите старые переменные из `.env`: приложение их не читает.
+
+## Деплой (docker compose)
+
+Нужен сервер с Docker Compose v2 и домен с HTTPS. HTTPS можно обеспечить reverse proxy
+(Caddy или nginx) на `127.0.0.1:3000`, туннелем cloudflared или самим Thruster
+(`TLS_DOMAIN`, порты 80 и 443, см. комментарии в `docker-compose.yml`).
+
+```bash
+cp .env.example .env    # PUBLIC_BASE_URL, POSTGRES_PASSWORD, ACTIVE_RECORD_ENCRYPTION_*,
+                        # RAILS_MASTER_KEY, MWALLET_PRODUCTION_BASE_URL
+docker compose up -d --build
+docker compose ps                      # app: healthy
+docker compose logs -f app
+docker compose exec app bin/rails tenants:list
+```
+
+- Контейнеров два: `postgres` (порт наружу не открыт) и `app`. При старте `app` выполняет `db:prepare`, то есть создаёт базу или применяет миграции. Задачи Solid Queue работают внутри Puma (`SOLID_QUEUE_IN_PUMA=true`).
+- Обновление: `git pull && docker compose up -d --build`.
+- Бэкап: `docker compose exec postgres pg_dump -U coffee coffee_bot | gzip > backup-$(date +%F).sql.gz`. Ключи `ACTIVE_RECORD_ENCRYPTION_*` храните отдельно: без них сохранённые токены и пароли не расшифровать.
+- Когда кофеен станет больше, вынесите задачи в отдельный контейнер (`bin/jobs`, `SOLID_QUEUE_IN_PUMA=false`) и проверьте `DB_POOL`.
+- Kamal (гем в Gemfile) пока не настроен (`config/deploy.yml` нет). Основной способ деплоя — docker compose.
+
+## Тесты
+
+```bash
+RAILS_ENV=test bin/rails db:prepare                        # один раз: база coffee_bot_test
 bundle exec rspec
+RAILS_ENV=test TEST_ENV_NUMBER=_mine bin/rails db:prepare  # своя база coffee_bot_test_mine
+TEST_ENV_NUMBER=_mine bundle exec rspec                    # для параллельных прогонов
+bin/rubocop && bin/brakeman
 ```
 
-## 📄 Лицензия
-
-MIT License
-
-## 🤝 Вклад в проект
-
-1. Fork репозитория
-2. Создайте ветку для фичи (`git checkout -b feature/amazing-feature`)
-3. Commit изменения (`git commit -m 'Add amazing feature'`)
-4. Push в ветку (`git push origin feature/amazing-feature`)
-5. Откройте Pull Request
+Сеть в тестах отключена, Telegram подменяется фейком. Каждый пример выполняется внутри
+своей кофейни (`spec/support/tenancy.rb`). CI (`.github/workflows/ci.yml`) запускает
+RuboCop, Brakeman, bundler-audit, importmap audit, RSpec на Postgres 16 и сборку Docker-образа.

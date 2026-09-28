@@ -10,3 +10,14 @@ updates:
   schedule:
     interval: weekly
   open-pull-requests-limit: 10
+# Ruby base image of the Dockerfile and postgres of docker-compose.yml
+- package-ecosystem: docker
+  directory: "/"
+  schedule:
+    interval: weekly
+  open-pull-requests-limit: 5
+- package-ecosystem: docker-compose
+  directory: "/"
+  schedule:
+    interval: weekly
+  open-pull-requests-limit: 5

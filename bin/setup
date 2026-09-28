@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 require "fileutils"
+require "securerandom"
 
 APP_ROOT = File.expand_path("..", __dir__)
 
@@ -15,12 +16,30 @@ FileUtils.chdir APP_ROOT do
   puts "== Installing dependencies =="
   system("bundle check") || system!("bundle install")
 
-  # puts "\n== Copying sample files =="
-  # unless File.exist?("config/database.yml")
-  #   FileUtils.cp "config/database.yml.sample", "config/database.yml"
-  # end
+  puts "\n== Preparing .env =="
+  unless File.exist?(".env")
+    FileUtils.cp ".env.example", ".env"
+    puts "Created .env from .env.example"
+  end
+
+  # Development keys for the encrypted bot tokens and MWallet passwords. Existing values are
+  # never replaced (data encrypted with them would become unreadable) and never printed.
+  env = File.read(".env")
+  generated = %w[
+    ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT
+  ].select do |key|
+    next false unless env[/^#{key}=(.*)$/, 1].to_s.delete(%q("')).strip.empty?
+
+    line = "#{key}=#{SecureRandom.alphanumeric(32)}"
+    env = env.match?(/^#{key}=/) ? env.sub(/^#{key}=.*$/, line) : "#{env.chomp}\n#{line}\n"
+  end
+  if generated.any?
+    File.write(".env", env)
+    puts "Generated #{generated.join(', ')} in .env"
+  end
 
   puts "\n== Preparing database =="
+  # Local PostgreSQL (config/database.yml); db:prepare also seeds the demo coffee shop
   system! "bin/rails db:prepare"
   system! "bin/rails db:reset" if ARGV.include?("--reset")
 

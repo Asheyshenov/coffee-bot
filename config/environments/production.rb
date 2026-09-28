@@ -24,16 +24,19 @@ Rails.application.configure do
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
 
-  # Assume all access to the app is happening through a SSL-terminating reverse proxy.
-  # config.assume_ssl = true
+  # Telegram webhooks and O!Dengi callbacks only reach HTTPS URLs. TLS is terminated in
+  # front of Puma (a reverse proxy, a tunnel, or Thruster with TLS_DOMAIN), so every
+  # request is treated as HTTPS even when the proxy does not send X-Forwarded-Proto.
+  config.assume_ssl = true
 
   # Force all access to the app over SSL, use Strict-Transport-Security, and use secure cookies.
-  # config.force_ssl = true
+  config.force_ssl = true
 
   # Skip http-to-https redirect for the default health check endpoint.
-  # config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
+  config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
 
-  # Log to STDOUT with the current request id as a default log tag.
+  # Log to STDOUT (docker compose logs) with the current request id as a default log tag.
+  # AppLog lines add tenant_id / order_id themselves.
   config.log_tags = [ :request_id ]
   config.logger   = ActiveSupport::TaggedLogging.logger(STDOUT)
 
@@ -50,14 +53,20 @@ Rails.application.configure do
   config.cache_store = :solid_cache_store
 
   # Replace the default in-process and non-durable queuing backend for Active Job.
+  # Solid Queue lives in the primary database (config/queue.yml). Workers run inside Puma
+  # with SOLID_QUEUE_IN_PUMA=true (config/puma.rb) or as a separate bin/jobs process.
   config.active_job.queue_adapter = :solid_queue
 
   # Ignore bad email addresses and do not raise email delivery errors.
   # Set this to true and configure the email server for immediate delivery to raise delivery errors.
   # config.action_mailer.raise_delivery_errors = false
 
+  # The only host this app answers for: the one Telegram and O!Dengi are given (PUBLIC_BASE_URL)
+  public_host = URI.parse(config.x.public_base_url).host
+  raise "PUBLIC_BASE_URL must be an absolute URL, e.g. https://coffee.example.com" if public_host.blank?
+
   # Set host to be used by links generated in mailer templates.
-  config.action_mailer.default_url_options = { host: "example.com" }
+  config.action_mailer.default_url_options = { host: public_host, protocol: "https" }
 
   # Specify outgoing SMTP server. Remember to add smtp/* credentials via bin/rails credentials:edit.
   # config.action_mailer.smtp_settings = {
@@ -78,12 +87,11 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
-  #
-  # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # Enable DNS rebinding protection and other `Host` header attacks: only the PUBLIC_BASE_URL
+  # host, plus optional extra names in RAILS_EXTRA_HOSTS (comma-separated).
+  config.hosts = [ public_host, *ENV.fetch("RAILS_EXTRA_HOSTS", "").split(",").map(&:strip) ].compact_blank
+
+  # Skip DNS rebinding protection for the default health check endpoint (Docker probes it
+  # by container address).
+  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end

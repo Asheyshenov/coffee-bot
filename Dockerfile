@@ -1,13 +1,16 @@
 # syntax=docker/dockerfile:1
 # check=error=true
 
-# This Dockerfile is designed for production, not development. Use with Kamal or build'n'run by hand:
+# This Dockerfile is designed for production, not development. Self-hosting: docker compose up -d --build
+# (docker-compose.yml adds Postgres and all settings). By hand:
 # docker build -t coffee_bot .
-# docker run -d -p 80:80 -e RAILS_MASTER_KEY=<value from config/master.key> --name coffee_bot coffee_bot
+# docker run -d -p 80:80 --env-file .env -e DATABASE_URL=... -e SOLID_QUEUE_IN_PUMA=true --name coffee_bot coffee_bot
+#
+# On start bin/docker-entrypoint runs db:prepare (creates / migrates the database), then
+# Thruster listens on port 80 and proxies to Puma on 3000. legacy/, spec/ and local
+# secrets are kept out of the image by .dockerignore.
 
-# For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
-
-# Make sure RUBY_VERSION matches the Ruby version in .ruby-version
+# Must match .ruby-version (CI fails when they differ): bump both together
 ARG RUBY_VERSION=3.2.2
 FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
@@ -16,15 +19,16 @@ WORKDIR /rails
 
 # Install base packages
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libjemalloc2 libvips postgresql-client && \
+    apt-get install --no-install-recommends -y curl libjemalloc2 libvips postgresql-client tzdata && \
     ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
 # Set production environment variables and enable jemalloc for reduced memory usage and latency.
+# Gems of the development and test groups (rspec, rubocop, dotenv, ...) stay out of the image.
 ENV RAILS_ENV="production" \
     BUNDLE_DEPLOYMENT="1" \
     BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development" \
+    BUNDLE_WITHOUT="development:test" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so"
 
 # Throw-away build stage to reduce size of final image
@@ -53,8 +57,6 @@ RUN bundle exec bootsnap precompile -j 1 app/ lib/
 
 # Precompiling assets for production without requiring secret RAILS_MASTER_KEY
 RUN SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
-
-
 
 
 # Final stage for app image

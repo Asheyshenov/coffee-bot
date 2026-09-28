@@ -8,6 +8,10 @@ fi
 # Default to port 3000 if not specified
 export PORT="${PORT:-3000}"
 
+# Jobs run in their own process here (the "jobs" line of Procfile.dev), not inside Puma,
+# even if .env enables SOLID_QUEUE_IN_PUMA for docker compose (dotenv keeps this value)
+export SOLID_QUEUE_IN_PUMA=false
+
 # Let the debug gem allow remote connections,
 # but avoid loading until `debugger` is called
 export RUBY_DEBUG_OPEN="true"

@@ -4,8 +4,9 @@
 /.git/
 /.gitignore
 
-# Ignore bundler config.
+# Ignore bundler config and locally installed gems (.bundle/config points to vendor/bundle).
 /.bundle
+/vendor/bundle/
 
 # Ignore all environment files.
 /.env*
@@ -45,6 +46,17 @@
 
 # Ignore development files
 /.devcontainer
+/.claude/
+/.kilo/
+/.rspec*
+/coverage/
+**/.DS_Store
+
+# Not needed at runtime: the old Sinatra app (with its SQLite database), tests and docs
+/legacy/
+/spec/
+/plans/
+/docs/
 
 # Ignore Docker-related files
 /.dockerignore

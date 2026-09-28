@@ -20,10 +20,10 @@ jobs:
 
       - name: Scan for common Rails security vulnerabilities using static analysis
         run: bin/brakeman --no-pager
-      
+
       - name: Scan for known security vulnerabilities in gems used
         run: bin/bundler-audit
-      
+
   scan_js:
     runs-on: ubuntu-latest
 
@@ -65,3 +65,67 @@ jobs:
       - name: Lint code for consistent style
         run: bin/rubocop -f github
 
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=5
+
+    env:
+      RAILS_ENV: test
+      # Fixed, non-secret Active Record encryption keys come from config/environments/test.rb
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/coffee_bot_test
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libyaml-dev
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Prepare database
+        run: bin/rails db:create db:schema:load
+
+      # Views link the compiled stylesheet; rspec does not build it like bin/rails test would
+      - name: Build Tailwind CSS
+        run: bin/rails tailwindcss:build
+
+      - name: Run specs
+        run: bundle exec rspec
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check that the Dockerfile uses the Ruby of .ruby-version
+        run: |
+          expected="$(sed 's/^ruby-//' .ruby-version | tr -d '[:space:]')"
+          actual="$(sed -n 's/^ARG RUBY_VERSION=//p' Dockerfile)"
+          [ "$expected" = "$actual" ] || { echo "::error file=Dockerfile::ARG RUBY_VERSION=$actual, .ruby-version says $expected"; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Catches Dockerfile / lockfile platform / asset precompilation problems; nothing is pushed
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
