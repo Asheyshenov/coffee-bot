@@ -43,6 +43,11 @@ module OrderStatus
   # Terminal statuses (order is complete)
   TERMINAL = [READY, CANCELLED, EXPIRED].freeze
 
+  # Late payment: the customer was charged after the invoice expired / order was cancelled
+  # (MWallet has no InvoiceCancel, so the QR stays payable). The order is NOT fulfilled:
+  # it keeps its status and the payment is recorded as PaymentStatus::REFUND_REQUIRED.
+  LATE_PAYMENT = [EXPIRED, CANCELLED].freeze
+
   # Allowed status transitions
   # Format: { from_status => [allowed_to_statuses] }
   TRANSITIONS = {
@@ -103,7 +108,13 @@ module PaymentStatus
   REFUNDED_FULL = 'REFUNDED_FULL'
   VOIDED = 'VOIDED'
 
-  ALL = [PENDING, PAID, FAILED, REFUNDED_PARTIAL, REFUNDED_FULL, VOIDED].freeze
+  # Paid after the order expired / was cancelled: the money must be returned to the client
+  REFUND_REQUIRED = 'REFUND_REQUIRED'
+
+  ALL = [PENDING, PAID, FAILED, REFUNDED_PARTIAL, REFUNDED_FULL, VOIDED, REFUND_REQUIRED].freeze
+
+  # Money was actually received for the order (even if it has to be / was refunded)
+  SETTLED = [PAID, REFUNDED_PARTIAL, REFUNDED_FULL, REFUND_REQUIRED].freeze
 end
 
 # Payment Operation Types

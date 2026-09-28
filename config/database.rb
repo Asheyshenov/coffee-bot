@@ -23,13 +23,15 @@ module CoffeeBot
         # Configure Sequel settings
         configure_sequel
         
-        # Run migrations in development if needed
+        # Development convenience only: everywhere else migrations are applied
+        # once by bin/migrate before the app processes start (no races between them)
         run_migrations_if_needed
         
         @connection
       end
       
-      # Run migrations (for test environment)
+      # Apply pending migrations from db/migrations
+      # Used by bin/migrate and the test suite; raises on failure
       def run_migrations!
         migrations_dir = File.expand_path('../db/migrations', __dir__)
         return unless Dir.exist?(migrations_dir)
@@ -38,6 +40,13 @@ module CoffeeBot
         Sequel.extension :migration
         
         Sequel::Migrator.run(@connection, migrations_dir, use_transactions: true)
+      end
+
+      # Current schema version (nil before the first migration)
+      def schema_version
+        return nil unless @connection.table_exists?(:schema_info)
+
+        @connection[:schema_info].get(:version)
       end
 
       private
@@ -62,15 +71,9 @@ module CoffeeBot
       def run_migrations_if_needed
         return unless Config::RACK_ENV == 'development'
         
-        migrations_dir = File.expand_path('../db/migrations', __dir__)
-        return unless Dir.exist?(migrations_dir)
-        
-        require 'sequel/extensions/migration'
-        Sequel.extension :migration
-        
         log_info('Running database migrations...')
         
-        Sequel::Migrator.run(@connection, migrations_dir, use_transactions: true)
+        run_migrations!
         
         log_info('Migrations completed successfully')
       rescue Sequel::Migrator::Error => e

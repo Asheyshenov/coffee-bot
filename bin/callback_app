@@ -2,7 +2,9 @@
 # frozen_string_literal: true
 
 # HTTP Callback Server Entry Point
-# This script starts the Sinatra server for QRPay callbacks
+# This script starts the Sinatra server (on Puma) for MWallet payment callbacks.
+# Listens on ENV PORT (default 9292). The database schema must be up to date:
+# run bin/migrate first (docker-compose does it in the one-shot "migrate" service).
 
 # Add lib directory to load path
 $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
@@ -19,10 +21,17 @@ Dir[File.expand_path('../lib/services/**/*.rb', __dir__)].sort.each { |f| requir
 # Load callback app
 require_relative '../lib/http/callback_app'
 
-log_info('Starting Callback Server...', 
+port = CoffeeBot::Config::PORT
+# In a container the server must listen on all interfaces;
+# locally it stays on loopback (a tunnel / reverse proxy forwards to it)
+bind = CoffeeBot::Config::RACK_ENV == 'production' ? '0.0.0.0' : 'localhost'
+
+log_info('Starting Callback Server...',
   environment: CoffeeBot::Config::RACK_ENV,
-  port: 9292
+  server: 'puma',
+  bind: bind,
+  port: port
 )
 
 # Run the Sinatra app
-CoffeeBot::HTTP::CallbackApp.run!
+CoffeeBot::HTTP::CallbackApp.run!(server: 'puma', bind: bind, port: port)

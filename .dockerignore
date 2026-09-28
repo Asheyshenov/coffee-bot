@@ -1,0 +1,45 @@
+# Keep host-specific, secret and bulky files out of the Docker build context.
+# Host gems (vendor/bundle, .bundle/config) are macOS builds and would overwrite
+# the Linux gems of the image; .env holds real credentials; db/*.sqlite3 holds
+# real client data.
+#
+# Unlike .gitignore, a pattern here is matched from the context root and "*"
+# never crosses "/": "*.db" skips ./coffee.db but NOT db/coffee.db.
+# Use "**/" for anything that may live in a subdirectory.
+# (spec/jobs/dockerignore_spec.rb checks these rules; the Dockerfile fails the
+# build if a database or .env still gets into the image)
+
+# VCS / tooling
+.git
+.gitignore
+.claude/
+.kilo/
+**/.DS_Store
+
+# Bundler (host gems and config)
+.bundle/
+vendor/
+
+# Secrets (compose passes the variables at runtime)
+**/.env
+**/.env.*
+!.env.example
+
+# Local databases (incl. -wal/-shm/-journal files) and runtime data
+# (data/ is mounted as a volume)
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/*.db-*
+data/
+tmp/
+log/
+**/*.log
+
+# Tests and docs are not needed in the production image
+spec/
+.rspec_status
+docs/
+plans/

@@ -5,10 +5,32 @@
 
 require_relative '../../config/boot'
 require_relative 'order_status'
+require 'bigdecimal'
 
 class Payment < Sequel::Model
   many_to_one :order
   one_to_many :payment_operations
+
+  # Parse an amount reported by a provider (tyiyn, same unit as orders.total_amount).
+  # Accepts Integer, Float/BigDecimal and numeric strings: "15000", "15000.00", "15 000,00".
+  #
+  # @param value [Integer, Numeric, String, nil] Raw amount
+  # @return [BigDecimal, nil] nil when no amount was reported
+  # @raise [ArgumentError] when an amount is present but not a finite number
+  def self.parse_amount(value)
+    return nil if value.nil?
+    return BigDecimal(value) if value.is_a?(Integer)
+
+    str = value.to_s.strip.delete(' ').tr(',', '.')
+    return nil if str.empty?
+
+    amount = BigDecimal(str)
+    raise ArgumentError, "invalid amount: #{value.inspect}" unless amount.finite?
+
+    amount
+  rescue TypeError
+    raise ArgumentError, "invalid amount: #{value.inspect}"
+  end
 
   # Validations
   def validate

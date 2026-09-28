@@ -4,11 +4,15 @@
 # Handles order lifecycle and business logic
 
 require_relative '../../config/boot'
+require_relative '../models/order_status'
 require_relative 'mwallet/mwallet_service'
 
 module CoffeeBot
   module Services
     class OrderService
+      # Statuses a client may cancel by themselves (nothing has been charged yet)
+      CLIENT_CANCELLABLE = [OrderStatus::NEW, OrderStatus::INVOICE_CREATED].freeze
+
       # Create order from draft
       #
       # @param draft [Draft] The draft with cart items
@@ -120,6 +124,115 @@ module CoffeeBot
         end
       end
 
+      # Cancel order on the client's request (/cancel)
+      #
+      # Only unpaid orders (NEW / INVOICE_CREATED) are cancelled. Before cancelling an
+      # invoice a last-chance payment sync is done, so a payment that has just arrived
+      # is not thrown away. PAID / IN_PROGRESS orders are never cancelled here: that
+      # requires a refund and goes through the barista.
+      #
+      # If that sync is the one that changed the order (payment found, or a payment that
+      # must not be accepted, e.g. too small), nobody else will announce it: the sync
+      # result is yielded so the caller sends the notifications
+      # (Notifier#notify_payment_result), just like StatusSyncer / callback do.
+      #
+      # @param order [Order] The order to cancel
+      # @yieldparam sync_result [Hash] Result of #sync_payment_status (:notify_barista or :payment_error set)
+      # @return [Symbol] Outcome:
+      #   :cancelled         - order cancelled (invoice cancelled at provider, or there was none)
+      #   :cancelled_locally - order cancelled, but the provider did not confirm the invoice cancel
+      #   :paid_now          - last-chance sync found the payment (result yielded)
+      #   :payment_problem   - last-chance sync found a payment that was rejected, order is ERROR (result yielded)
+      #   :already_paid      - order is already paid and waiting in the queue
+      #   :in_progress       - barista is already preparing the order
+      #   :not_cancellable   - order is in another state (e.g. expired meanwhile)
+      def self.cancel_by_client(order)
+        outcome = client_cancel_blocker(order)
+
+        if outcome.nil? && order.status == OrderStatus::INVOICE_CREATED
+          result = last_chance_sync(order)
+          settled = result[:notify_barista] || result[:payment_error] || result[:refund_required]
+          yield result if settled && block_given?
+          outcome = client_cancel_blocker(order.refresh, settled_now: settled)
+        end
+
+        outcome ||= cancel_unpaid_order(order)
+        log_info('Client cancel request processed', order_id: order.id, outcome: outcome, status: order.status)
+        outcome
+      end
+
+      # Why the client cannot (or no longer needs to) cancel the order
+      #
+      # @param order [Order] The order
+      # @param settled_now [Boolean] Whether the payment (or a payment problem) was detected just now
+      # @return [Symbol, nil] Outcome for #cancel_by_client, nil if the order can be cancelled
+      def self.client_cancel_blocker(order, settled_now: false)
+        case order.status
+        when *CLIENT_CANCELLABLE then nil
+        when OrderStatus::PAID then settled_now ? :paid_now : :already_paid
+        when OrderStatus::IN_PROGRESS then :in_progress
+        when OrderStatus::CANCELLED then :cancelled
+        when OrderStatus::ERROR then settled_now ? :payment_problem : :not_cancellable
+        else :not_cancellable
+        end
+      end
+      private_class_method :client_cancel_blocker
+
+      # Sync payment status right before cancelling; errors must not block the cancel
+      #
+      # @param order [Order] The order
+      # @return [Hash] Sync result (empty if the sync failed)
+      def self.last_chance_sync(order)
+        sync_payment_status(order)
+      rescue StandardError => e
+        log_error('Last-chance payment sync failed, cancelling anyway', order_id: order.id, error: e.message)
+        {}
+      end
+      private_class_method :last_chance_sync
+
+      # Cancel an unpaid order: invoice at the provider first, then locally
+      # A CANCELLED order with a still payable invoice (:cancelled_locally) is not lost:
+      # StatusSyncer keeps polling it as a late-payment candidate.
+      #
+      # @param order [Order] NEW or INVOICE_CREATED order
+      # @return [Symbol] Outcome for #cancel_by_client
+      def self.cancel_unpaid_order(order)
+        api_cancelled = false
+        if order.invoice_id_provider
+          api_cancelled = begin
+            MWallet::Service.new.cancel_invoice_for_order(order)
+          rescue StandardError => e
+            log_error('Failed to cancel invoice via API', order_id: order.id, error: e.message)
+            false
+          end
+        end
+
+        # cancel_invoice_for_order already cancels locally (also when the API call fails with
+        # an MWallet error); cover orders without invoice and unexpected errors the same way.
+        # Conditional update, so it is a no-op if the order was cancelled or paid meanwhile.
+        cancel_unpaid_locally(order)
+
+        # Judge by the stored status, not by the API flag: the order may have been paid
+        # (callback / StatusSyncer) while the cancel request was in flight
+        if order.refresh.status == OrderStatus::CANCELLED
+          (api_cancelled || order.invoice_id_provider.nil?) ? :cancelled : :cancelled_locally
+        else
+          client_cancel_blocker(order) || :not_cancellable
+        end
+      end
+      private_class_method :cancel_unpaid_order
+
+      # Atomically mark an unpaid order as cancelled (no-op if it was paid meanwhile)
+      #
+      # @param order [Order] The order
+      # @return [Boolean] True if the row was updated
+      def self.cancel_unpaid_locally(order)
+        Order.where(id: order.id, status: CLIENT_CANCELLABLE)
+             .update(status: OrderStatus::CANCELLED, updated_at: Time.now.utc)
+             .positive?
+      end
+      private_class_method :cancel_unpaid_locally
+
       # Sync order status with payment provider
       # Also triggers notifications if payment was detected
       #
@@ -136,6 +249,8 @@ module CoffeeBot
       end
 
       # Expire old invoices
+      # NB: bulk variant without the last-chance payment check and client notification;
+      # the bot uses Jobs::InvoiceExpirer instead.
       #
       # @param expire_minutes [Integer] Minutes before expiration
       # @return [Integer] Number of expired orders
@@ -146,7 +261,8 @@ module CoffeeBot
         
         # Use bulk update instead of N+1 queries
         # This updates all matching orders in a single SQL statement
-        count = DB.transaction do
+        # ::DB is the connection (a bare DB here resolves to the CoffeeBot::DB class)
+        count = ::DB.transaction do
           # Lock and update in bulk for consistency
           affected_ids = Order
             .for_update
@@ -157,15 +273,13 @@ module CoffeeBot
           if affected_ids.empty?
             0
           else
-            # Bulk update status
-            Order.where(id: affected_ids).update(status: OrderStatus::EXPIRED)
-            
-            # Log each expired order (optional, can be batched)
-            affected_ids.each do |order_id|
-              log_info('Order expired', order_id: order_id)
-            end
-            
-            affected_ids.size
+            # Bulk update status; the status guard keeps a concurrent payment (PAID) intact
+            # (for_update is a no-op on SQLite)
+            expired = Order.where(id: affected_ids, status: OrderStatus::INVOICE_CREATED)
+                           .update(status: OrderStatus::EXPIRED, updated_at: Time.now.utc)
+
+            log_info('Orders expired', count: expired, candidate_ids: affected_ids)
+            expired
           end
         end
         

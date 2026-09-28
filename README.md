@@ -22,10 +22,11 @@ NEW → INVOICE_CREATED → PAID → IN_PROGRESS → READY
 
 ### Требования
 
-- Ruby 3.0+
+- Ruby 3.2 + Bundler
 - SQLite3 (разработка) или PostgreSQL (продакшн)
 - Telegram Bot Token (от @BotFather)
-- QRPay аккаунт (O!Деньги)
+- Аккаунт MWallet (O!Деньги): SID и пароль сервиса
+- Для продакшна: Docker с Compose v2 (`docker compose`)
 
 ### Быстрый старт (SQLite)
 
@@ -46,10 +47,13 @@ NEW → INVOICE_CREATED → PAID → IN_PROGRESS → READY
    # Отредактируйте .env с вашими настройками
    ```
 
-4. **Запустите миграции**
+4. **Примените миграции**
    ```bash
-   bundle exec sequel -m db/migrations sqlite://db/development.sqlite3
+   bundle exec ruby bin/migrate
    ```
+   В development (`RACK_ENV=development`) миграции дополнительно применяются
+   автоматически при старте. В любом другом окружении их нужно запускать
+   только через `bin/migrate`.
 
 5. **Заполните меню (опционально)**
    ```ruby
@@ -59,28 +63,71 @@ NEW → INVOICE_CREATED → PAID → IN_PROGRESS → READY
    CoffeeBot::Services::MenuService.seed_menu
    ```
 
-6. **Запустите бота**
+6. **Запустите бота и сервер callbacks**
    ```bash
-   ruby bin/bot
+   bundle exec ruby bin/bot            # бот + фоновые задачи StatusSyncer и InvoiceExpirer
+   bundle exec ruby bin/callback_app   # Puma на порту PORT (по умолчанию 9292)
    ```
+   Локально сервер callbacks слушает только `localhost`. Чтобы MWallet мог до него
+   достучаться, поднимите туннель (например, `cloudflared tunnel --url http://localhost:9292`)
+   и укажите его адрес в `PUBLIC_BASE_URL`.
 
-### С PostgreSQL (Docker)
+### Продакшн (Docker Compose + PostgreSQL)
 
-1. **Настройте переменные окружения**
+1. **Настройте .env** рядом с `docker-compose.yml`
    ```bash
-   # Создайте .env файл с настройками продакшн
-   DATABASE_URL=postgres://coffee:password@postgres:5432/coffee_bot
-   TELEGRAM_BOT_TOKEN=your_token
+   cp .env.example .env
+   ```
+   Обязательно заполните (без них `docker compose` сразу завершится с ошибкой):
+   ```bash
+   POSTGRES_PASSWORD=...        # только буквы и цифры: пароль подставляется в DATABASE_URL
+   TELEGRAM_BOT_TOKEN=...
    BARISTA_WHITELIST=123456789,987654321
-   QRPAY_MERCHANT_ID=your_merchant_id
-   QRPAY_SECRET_KEY=your_secret_key
+   MWALLET_SID=...
+   MWALLET_PASSWORD='...'
    PUBLIC_BASE_URL=https://your-domain.com
+   MWALLET_TEST_MODE=false      # для реальных платежей (по умолчанию true, песочница)
+   ```
+   `DATABASE_URL` и `RACK_ENV=production` compose задаёт сам.
+
+2. **Соберите образ и запустите**
+   ```bash
+   docker compose up -d --build
+   ```
+   Порядок запуска:
+   - `postgres` стартует и проходит healthcheck;
+   - одноразовый сервис `migrate` выполняет `bin/migrate` и завершается;
+   - `bot` и `callback` стартуют только после успешных миграций, поэтому
+     не соревнуются между собой за миграции. Если миграция упала, они не запустятся:
+     смотрите `docker compose logs migrate`.
+
+   Миграции выполняются при каждом `docker compose up`. Запустить их вручную:
+   ```bash
+   docker compose run --rm migrate
    ```
 
-2. **Запустите через docker-compose**
+3. **Настройте HTTPS.** Сервер callbacks (Puma) слушает `0.0.0.0:9292` внутри контейнера,
+   порт 9292 опубликован на хосте. Поставьте перед ним reverse proxy с TLS (nginx, Caddy)
+   или туннель и укажите внешний адрес в `PUBLIC_BASE_URL`. MWallet отправляет callbacks
+   на `PUBLIC_BASE_URL/callbacks/mwallet/result`. В production сервер принимает
+   запросы только с хостом из `PUBLIC_BASE_URL`: proxy должен передавать исходный
+   заголовок `Host`.
+
+4. **База данных** наружу не публикуется: она доступна только контейнерам этого стека.
    ```bash
-   docker-compose up -d
+   docker compose exec postgres psql -U coffee coffee_bot
    ```
+   Если нужен доступ с хоста, раскомментируйте в `docker-compose.yml`
+   `ports: "127.0.0.1:5432:5432"` (только loopback).
+
+Образ собирается без `vendor/`, `.bundle/`, `.env` и локальных баз SQLite
+в любых каталогах, включая `db/development.sqlite3` (см. `.dockerignore`).
+Если такой файл всё же попадёт в контекст сборки, `docker build` завершится
+с ошибкой. Гемы ставятся в `/usr/local/bundle` внутри образа.
+
+В `.dockerignore` шаблон сопоставляется с корнем контекста: `*.db` исключает
+только `./coffee.db`, но не `db/coffee.db`. Для файлов в подкаталогах нужен
+префикс `**/`.
 
 ## ⚙️ Конфигурация
 
@@ -90,19 +137,35 @@ NEW → INVOICE_CREATED → PAID → IN_PROGRESS → READY
 |------------|----------|
 | `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather |
 | `BARISTA_WHITELIST` | Telegram ID барист (через запятую) |
-| `QRPAY_MERCHANT_ID` | ID мерчанта O!Деньги |
-| `QRPAY_SECRET_KEY` | Секретный ключ для подписи |
+| `MWALLET_SID` | ID сервиса MWallet |
+| `MWALLET_PASSWORD` | Пароль сервиса MWallet (подпись запросов и callbacks) |
+| `PUBLIC_BASE_URL` | Публичный HTTPS-адрес сервера callbacks (обязателен в продакшне) |
+| `POSTGRES_PASSWORD` | Пароль PostgreSQL (только для docker-compose) |
 
 ### Опциональные переменные
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DATABASE_URL` | `sqlite://db/development.sqlite3` | URL базы данных |
-| `ORDER_EXPIRE_MINUTES` | `15` | Минуты до истечения счёта |
-| `QRPAY_BASE_URL` | `https://api.odengi.kg` | URL API QRPay |
-| `PUBLIC_BASE_URL` | `http://localhost:9292` | Публичный URL для callbacks |
-| `QRPAY_TIMEOUT_SECONDS` | `30` | Таймаут запросов |
-| `QRPAY_RETRY_COUNT` | `3` | Количество повторов |
+| `DATABASE_URL` | `sqlite://db/development.sqlite3` | URL базы данных (в docker-compose задаётся автоматически) |
+| `RACK_ENV` | `development` | Окружение; в docker-compose `production` |
+| `PORT` | `9292` | Порт сервера callbacks (`bin/callback_app`) |
+| `ORDER_EXPIRE_MINUTES` | `15` | Минуты до истечения неоплаченного счёта |
+| `MWALLET_BASE_URL` | `https://mw-api-test.dengi.kg/api/json/json.php` | URL API MWallet |
+| `MWALLET_TEST_MODE` | `true` | Тестовые счета; `false` для реальных платежей |
+| `MWALLET_API_VERSION` | `1005` | Версия API MWallet |
+| `MWALLET_TIMEOUT_SECONDS` | `30` | Таймаут запросов к MWallet |
+| `MWALLET_RETRY_COUNT` | `3` | Количество повторов при сетевых ошибках |
+| `TUNNEL_HOSTS` | `.trycloudflare.com` | Разрешённые хосты туннелей (только development) |
+
+### Фоновые задачи
+
+Задачи запускаются внутри `bin/bot`:
+
+- **StatusSyncer** (каждые 2 с) опрашивает MWallet по неоплаченным счетам на случай,
+  если callback не дошёл.
+- **InvoiceExpirer** (каждые 60 с) обрабатывает счета старше `ORDER_EXPIRE_MINUTES`.
+  Сначала ещё раз проверяет оплату: если счёт оплачен, заказ уходит баристам.
+  Иначе отменяет счёт в MWallet, переводит заказ в `EXPIRED` и сообщает клиенту.
 
 ## 🤖 Команды бота
 
@@ -185,8 +248,9 @@ UPDATE menu_items SET is_available = 0 WHERE id = 1;
 ```
 coffee-bot/
 ├── bin/
-│   ├── bot              # Точка входа Telegram бота
-│   └── callback_app     # HTTP сервер для callbacks
+│   ├── bot              # Точка входа Telegram бота (+ фоновые задачи)
+│   ├── callback_app     # HTTP сервер для callbacks (Puma, PORT)
+│   └── migrate          # Применение миграций БД
 ├── config/
 │   ├── boot.rb          # Загрузка конфигурации
 │   └── database.rb      # Подключение к БД
@@ -205,9 +269,10 @@ coffee-bot/
 │   │   └── qrpay/       # QRPay интеграция
 │   ├── http/
 │   │   └── callback_app.rb
-│   └── jobs/            # Фоновые задачи
+│   └── jobs/            # Фоновые задачи (StatusSyncer, InvoiceExpirer)
 ├── spec/                # Тесты RSpec
 ├── .env.example         # Пример конфигурации
+├── .dockerignore        # Что не попадает в Docker-образ
 ├── docker-compose.yml
 ├── Dockerfile
 └── Gemfile
@@ -242,8 +307,16 @@ coffee-bot/
 ### Health check
 
 ```bash
+# development
 curl http://localhost:9292/health
+
+# production: разрешён только хост из PUBLIC_BASE_URL
+curl https://your-domain.com/health
+curl -H "Host: your-domain.com" http://localhost:9292/health   # с сервера, в обход proxy
 ```
+
+В docker-compose у сервиса `callback` настроен healthcheck по `/health`
+(`docker compose ps` показывает `healthy`).
 
 ### Логи
 

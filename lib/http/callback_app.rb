@@ -52,25 +52,32 @@ module CoffeeBot
       end
 
       # MWallet callback endpoint
+      # 200 - processed (or unknown order / duplicate, acknowledged)
+      # 400 - empty or malformed body, 401 - bad signature
       post '/callbacks/mwallet/result' do
         request.body.rewind
-        raw_body = request.body.read
+        raw_body = request.body.read.to_s
         
         log_info('Received MWallet callback',
           content_type: request.content_type,
           body_length: raw_body.length
         )
 
-        begin
-          # Parse callback data
-          params = parse_callback_data(raw_body, request.content_type)
+        # Parse callback data (nil for empty / malformed / non-object bodies)
+        params = parse_callback_data(raw_body, request.content_type)
+        unless params
+          log_error('Invalid MWallet callback body', body_length: raw_body.length)
+          halt 400, { error: 'Invalid request body' }.to_json
+        end
 
+        begin
           # Process callback (signature verification inside service)
           result = Services::OrderService.process_payment_callback(params, raw_body)
 
-          # Send barista notification if payment was successful
-          if result[:notify_barista] && result[:order_id]
-            notify_baristas_async(result[:order_id])
+          # Notify client + baristas (or alert baristas about a payment problem).
+          # Only the caller that changed the order gets these flags.
+          if result[:order_id] && (result[:notify_barista] || result[:payment_error] || result[:refund_required])
+            notify_payment_async(result)
           end
 
           { status: 'ok' }.to_json
@@ -79,17 +86,18 @@ module CoffeeBot
           log_error('MWallet callback signature verification failed', error: e.message)
           halt 401, { error: 'Invalid signature' }.to_json
 
-        rescue JSON::ParserError => e
-          log_error('Invalid JSON in callback', error: e.message)
-          halt 400, { error: 'Invalid JSON' }.to_json
+        rescue MWalletError::ValidationError => e
+          log_error('Invalid MWallet callback', error: e.message)
+          halt 400, { error: 'Invalid request body' }.to_json
 
         rescue StandardError => e
           log_error('Callback processing error',
-            error: e.message,
+            error: "#{e.class}: #{e.message}",
             backtrace: e.backtrace&.first(3)
           )
-          # Return 200 to acknowledge receipt (don't retry)
-          { status: 'error', message: e.message }.to_json
+          # Return 200 to acknowledge receipt; StatusSyncer polling is the fallback.
+          # Never expose exception details to the caller.
+          { status: 'error' }.to_json
         end
       end
 
@@ -121,42 +129,53 @@ module CoffeeBot
       private
 
       # Parse callback data based on content type
+      # @return [Hash, nil] Params with string keys, nil if the body is empty or malformed
       def parse_callback_data(raw_body, content_type)
-        if content_type&.include?('application/json')
-          JSON.parse(raw_body)
-        elsif content_type&.include?('application/x-www-form-urlencoded')
-          # Parse form data, converting to indifferent access
-          Rack::Utils.parse_nested_query(raw_body).transform_keys(&:to_s)
-        else
-          # Try JSON first, then form data
-          begin
-            JSON.parse(raw_body)
-          rescue JSON::ParserError
-            Rack::Utils.parse_nested_query(raw_body).transform_keys(&:to_s)
-          end
-        end
+        return nil if raw_body.strip.empty?
+
+        data = if content_type&.include?('application/json')
+                 JSON.parse(raw_body)
+               elsif content_type&.include?('application/x-www-form-urlencoded')
+                 Rack::Utils.parse_nested_query(raw_body)
+               else
+                 # Try JSON first, then form data
+                 begin
+                   JSON.parse(raw_body)
+                 rescue JSON::ParserError
+                   Rack::Utils.parse_nested_query(raw_body)
+                 end
+               end
+
+        data.is_a?(Hash) ? data.transform_keys(&:to_s) : nil
+      rescue JSON::ParserError, Rack::Utils::ParameterTypeError, Rack::Utils::InvalidParameterError,
+             Rack::QueryParser::QueryLimitError
+        nil
       end
 
-      # Send notification to baristas asynchronously
-      # Runs in a separate thread to not block the callback response
-      def notify_baristas_async(order_id)
+      # Send payment notifications asynchronously (client + baristas, or a payment
+      # problem alert). Runs in a separate thread to not block the callback response.
+      #
+      # @param result [Hash] Result of MWallet::Service#process_callback
+      def notify_payment_async(result)
+        order_id = result[:order_id]
+
         Thread.new do
           begin
             order = Order[order_id]
             unless order
-              log_error('Cannot notify baristas: order not found', order_id: order_id)
-              return
+              log_error('Cannot send payment notifications: order not found', order_id: order_id)
+              next
             end
 
             # Create bot instance for notification
             bot = Telegram::Bot::Client.new(CoffeeBot::Config::TELEGRAM_BOT_TOKEN)
             notifier = Services::Notifier.new(bot)
 
-            # Notify baristas about new paid order
-            notifier.notify_baristas_new_order(order)
-            log_info('Baristas notified about paid order', order_id: order_id)
+            notifier.notify_payment_result(order, result)
+            log_info('Payment notifications sent', order_id: order_id,
+              refund_required: result[:refund_required] || false, payment_error: result[:payment_error])
           rescue StandardError => e
-            log_error('Failed to notify baristas',
+            log_error('Failed to send payment notifications',
               order_id: order_id,
               error: e.message,
               backtrace: e.backtrace&.first(3)

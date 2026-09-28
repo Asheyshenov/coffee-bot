@@ -4,12 +4,18 @@
 # Dispatches incoming Telegram messages to appropriate handlers
 
 require_relative '../../config/boot'
+require_relative '../models/order_status'
 require_relative 'keyboards'
 require 'telegram/bot'
 
 module CoffeeBot
   module Bot
     class Router
+      # Order statuses that mean the payment has already been received
+      PAID_STATUSES = [OrderStatus::PAID, OrderStatus::IN_PROGRESS, OrderStatus::READY].freeze
+
+      BARISTA_ACCESS_DENIED = '⛔ У вас нет доступа к панели баристы.'
+
       attr_reader :bot, :notifier
 
       def initialize(bot)
@@ -76,9 +82,9 @@ module CoffeeBot
 
         log_debug('Received callback', user_id: user_id, data: data)
 
-        # Answer callback to remove loading state
-        bot.api.answer_callback_query(callback_query_id: callback.id)
-
+        # NB: a callback query can be answered only once (Telegram rejects the second
+        # answer), so handlers answer it themselves via answer_callback when they need
+        # a toast/alert; the ensure below answers the rest to remove the loading state.
         case data
         when /^category_(.+)$/
           handle_category_select(callback, Regexp.last_match(1))
@@ -98,6 +104,8 @@ module CoffeeBot
           handle_barista_claim(callback, Regexp.last_match(1).to_i)
         when /^barista_complete_(\d+)$/
           handle_barista_complete(callback, Regexp.last_match(1).to_i)
+        when /^refund_done_(\d+)$/
+          handle_refund_done(callback, Regexp.last_match(1).to_i)
         when /^barista_(queue|in_progress|menu)$/
           handle_barista_action(callback, Regexp.last_match(1))
         when 'skip_comment'
@@ -140,6 +148,9 @@ module CoffeeBot
         else
           log_debug('Unknown callback', data: data)
         end
+      ensure
+        # Stop the button spinner even if the handler did not answer or raised
+        answer_callback(callback)
       end
 
       # === Command Handlers ===
@@ -242,59 +253,37 @@ module CoffeeBot
       end
 
       def handle_barista_panel(message)
-        user_id = message.from.id
-
         # Check authorization
-        unless Services::AuthService.barista?(user_id)
-          bot.api.send_message(
-            chat_id: user_id,
-            text: '⛔ У вас нет доступа к панели баристы.'
-          )
-          return
-        end
+        return unless authorize_barista(message)
 
         show_barista_panel(message)
       end
 
       def handle_cancel(message)
         user_id = message.from.id
-        cancelled_orders = []
-        failed_cancellations = []
 
-        # Find and cancel active orders
+        # Only unpaid orders are cancelled; paid ones stay (refund goes through the barista)
         active_orders = Services::OrderService.active_orders_for_client(user_id)
-        mwallet_service = MWallet::Service.new
-        
-        active_orders.each do |order|
-          if order.invoice_id_provider && order.status == OrderStatus::INVOICE_CREATED
-            # Try to cancel via API
-            begin
-              mwallet_service.cancel_invoice_for_order(order)
-              cancelled_orders << order.id
-            rescue => e
-              log_error("Failed to cancel order #{order.id}", error: e.message)
-              # Still mark as cancelled locally
-              order.update(status: OrderStatus::CANCELLED)
-              failed_cancellations << order.id
-            end
-          else
-            # Order without invoice - just mark as cancelled
-            order.update(status: OrderStatus::CANCELLED)
-            cancelled_orders << order.id
+        outcomes = active_orders.map do |order|
+          outcome = Services::OrderService.cancel_by_client(order) do |sync_result|
+            # Last-chance sync settled the order (paid, or a payment problem): nobody else
+            # announces it, so send the regular payment notifications (baristas + client)
+            notify_payment_result(order, sync_result, notify_client: true)
           end
+          [order, outcome]
         end
 
         # Clear draft
         Draft.clear(user_id)
 
         # Build response message
-        if cancelled_orders.empty? && failed_cancellations.empty?
+        if outcomes.empty?
           text = '❌ Корзина очищена. Нет активных заказов для отмены.'
         else
-          parts = []
-          parts << "❌ Отменено заказов: #{cancelled_orders.length}" if cancelled_orders.any?
-          parts << "⚠️ Не удалось отменить через API: #{failed_cancellations.join(', ')}" if failed_cancellations.any?
-          parts << "\nНачните заново с /order"
+          parts = outcomes.map { |order, outcome| cancel_outcome_text(order, outcome) }
+          if outcomes.any? { |_, outcome| %i[cancelled cancelled_locally].include?(outcome) }
+            parts << "\nНачните заново с /order"
+          end
           text = parts.join("\n")
         end
 
@@ -302,6 +291,25 @@ module CoffeeBot
           chat_id: user_id,
           text: text
         )
+      end
+
+      # User-facing text for a Services::OrderService.cancel_by_client outcome
+      def cancel_outcome_text(order, outcome)
+        case outcome
+        when :cancelled
+          "❌ Заказ ##{order.id} отменён."
+        when :cancelled_locally
+          "❌ Заказ ##{order.id} отменён, но счёт не удалось отменить в платёжной системе. " \
+            'Пожалуйста, не оплачивайте его.'
+        when :paid_now, :already_paid
+          "✅ Заказ ##{order.id} уже оплачен и стоит в очереди. Для отмены обратитесь к баристе."
+        when :in_progress
+          "☕ Заказ ##{order.id} уже готовится. Для отмены обратитесь к баристе."
+        when :payment_problem
+          payment_problem_text(order)
+        else
+          "ℹ️ Заказ ##{order.id} уже нельзя отменить (статус: #{order.display_status})."
+        end
       end
 
       def handle_help(message)
@@ -725,8 +733,6 @@ module CoffeeBot
             reply_markup: keyboard
           )
         end
-
-        bot.api.answer_callback_query(callback_query_id: callback.id)
       end
 
       def handle_start_order_callback(callback)
@@ -735,11 +741,7 @@ module CoffeeBot
         # Check if user has active order
         active = Services::OrderService.active_order_for_client(user_id)
         if active
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: "У вас уже есть активный заказ ##{active.id}",
-            show_alert: true
-          )
+          answer_callback(callback, text: "У вас уже есть активный заказ ##{active.id}", show_alert: true)
           return
         end
 
@@ -754,7 +756,6 @@ module CoffeeBot
           text: '🏠 Главное меню:',
           reply_markup: keyboard
         )
-        bot.api.answer_callback_query(callback_query_id: callback.id)
       end
 
       def handle_check_payment(callback, order_id)
@@ -762,43 +763,62 @@ module CoffeeBot
         order = Order[order_id]
 
         unless order && order.telegram_user_id == user_id
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Заказ не найден'
-          )
+          answer_callback(callback, text: 'Заказ не найден')
           return
         end
 
-        # Sync status
-        if Services::OrderService.sync_payment_status(order)
+        # Sync status (not needed once the order is paid - StatusSyncer/callback got there first)
+        result = {}
+        unless PAID_STATUSES.include?(order.status)
+          begin
+            result = Services::OrderService.sync_payment_status(order)
+          rescue StandardError => e
+            log_error('Failed to check payment status', order_id: order.id, error: e.message)
+            answer_callback(callback, text: '⚠️ Не удалось проверить оплату. Попробуйте чуть позже.')
+            return
+          end
           order.refresh
 
-          if order.status == OrderStatus::PAID
-            bot.api.edit_message_text(
-              chat_id: user_id,
-              message_id: callback.message.message_id,
-              text: "✅ Оплата подтверждена! Заказ ##{order.id} передан в работу."
-            )
+          # Only the caller that changed the order gets the flags (otherwise StatusSyncer /
+          # callback already announced it), so baristas are told exactly once. The client
+          # is answered right here, no separate message.
+          notify_payment_result(order, result, notify_client: false)
+        end
 
-            # Notify baristas
-            @notifier.notify_baristas_new_order(order)
+        case order.status
+        when *PAID_STATUSES
+          text = if order.status == OrderStatus::PAID
+            "✅ Оплата подтверждена! Заказ ##{order.id} передан в работу."
           else
-            bot.api.answer_callback_query(
-              callback_query_id: callback.id,
-              text: 'Оплата ещё не получена. Попробуйте позже.'
-            )
+            "✅ Заказ ##{order.id} оплачен. Статус: #{order.display_status}."
           end
-        else
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Статус не изменился'
+          bot.api.edit_message_text(
+            chat_id: user_id,
+            message_id: callback.message.message_id,
+            text: text
           )
+        when OrderStatus::INVOICE_CREATED
+          answer_callback(callback, text: '⏳ Оплата ещё не получена. Попробуйте чуть позже.')
+        else
+          # Closed order (expired / cancelled / error). A late payment keeps the order
+          # closed and is refunded; a rejected payment (e.g. amount too low) ends in ERROR.
+          text = if result[:payment_error]
+            payment_problem_text(order)
+          elsif result[:refund_required] || order.refund_required?
+            "💸 Оплата по заказу ##{order.id} поступила #{late_payment_reason(result[:previous_status] || order.status)}. " \
+              'Заказ не будет приготовлен, деньги вернём.'
+          else
+            "Заказ ##{order.id}: #{order.display_status}"
+          end
+          answer_callback(callback, text: text, show_alert: true)
         end
       end
 
       # === Barista Handlers ===
 
       def show_barista_panel(message)
+        return unless authorize_barista(message)
+
         user_id = message.from.id
 
         keyboard = Telegram::Bot::Types::InlineKeyboardMarkup.new(
@@ -833,13 +853,15 @@ module CoffeeBot
       end
 
       def handle_barista_action(callback, action)
-        user_id = callback.from.id
+        return unless authorize_barista(callback)
 
         case action
         when 'queue'
           show_barista_queue(callback)
         when 'in_progress'
           show_barista_in_progress(callback)
+        when 'menu'
+          show_barista_panel(callback)
         end
       end
 
@@ -906,6 +928,8 @@ module CoffeeBot
       end
 
       def handle_barista_claim(callback, order_id)
+        return unless authorize_barista(callback)
+
         user_id = callback.from.id
 
         if Services::OrderService.claim_order(order_id, user_id)
@@ -920,22 +944,19 @@ module CoffeeBot
           # Notify client
           @notifier.notify_order_preparing(order)
         else
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Не удалось принять заказ. Возможно, его уже взял другой бариста.'
-          )
+          answer_callback(callback, text: 'Не удалось принять заказ. Возможно, его уже взял другой бариста.')
         end
       end
 
       def handle_barista_complete(callback, order_id)
+        return unless authorize_barista(callback)
+
         user_id = callback.from.id
         order = Order[order_id]
 
+        # Only the barista who claimed the order may complete it
         unless order && order.assigned_to_barista_id == user_id
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Заказ не найден или не принадлежит вам'
-          )
+          answer_callback(callback, text: 'Заказ не найден или не принадлежит вам', show_alert: true)
           return
         end
 
@@ -949,6 +970,24 @@ module CoffeeBot
           # Notify client
           @notifier.notify_order_ready(order)
         end
+      end
+
+      # Barista confirms that a late payment was returned to the client
+      def handle_refund_done(callback, order_id)
+        return unless authorize_barista(callback)
+
+        order = Order[order_id]
+        unless order&.mark_refunded!(callback.from.id)
+          answer_callback(callback, text: 'Возврат уже отмечен или не требуется', show_alert: true)
+          return
+        end
+
+        bot.api.edit_message_text(
+          chat_id: callback.from.id,
+          message_id: callback.message.message_id,
+          text: "✅ Возврат по заказу ##{order.id} отмечен как выполненный. Клиент уведомлён."
+        )
+        @notifier.notify_refund_completed(order)
       end
 
       # === New Menu Navigation Handlers ===
@@ -965,10 +1004,7 @@ module CoffeeBot
         items = Services::MenuService.items_by_category(category)
         
         if items.empty?
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: "В категории '#{category}' нет товаров"
-          )
+          answer_callback(callback, text: "В категории '#{category}' нет товаров")
           return
         end
         
@@ -990,10 +1026,7 @@ module CoffeeBot
         popular_items = Services::MenuService.popular_items
         
         if popular_items.empty?
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Нет популярных товаров'
-          )
+          answer_callback(callback, text: 'Нет популярных товаров')
           return
         end
         
@@ -1041,10 +1074,7 @@ module CoffeeBot
         orders = Services::OrderService.client_orders(user_id, limit: 5)
         
         if orders.empty?
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'У вас пока нет заказов'
-          )
+          answer_callback(callback, text: 'У вас пока нет заказов')
           return
         end
         
@@ -1099,10 +1129,7 @@ module CoffeeBot
         draft = Draft.for_user(user_id)
         
         unless draft
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Начните заказ сначала'
-          )
+          answer_callback(callback, text: 'Начните заказ сначала')
           return
         end
         
@@ -1131,10 +1158,7 @@ module CoffeeBot
         draft = Draft.for_user(user_id)
         
         unless draft
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Начните заказ сначала'
-          )
+          answer_callback(callback, text: 'Начните заказ сначала')
           return
         end
         
@@ -1160,10 +1184,7 @@ module CoffeeBot
         item = Services::MenuService.find_item(item_id)
         
         unless item
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Товар не найден'
-          )
+          answer_callback(callback, text: 'Товар не найден')
           return
         end
         
@@ -1192,10 +1213,7 @@ module CoffeeBot
         order = Order[order_id]
         
         unless order && order.telegram_user_id == user_id
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Заказ не найден'
-          )
+          answer_callback(callback, text: 'Заказ не найден')
           return
         end
         
@@ -1240,10 +1258,7 @@ module CoffeeBot
         item = MenuItem[item_id]
         
         unless item
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Товар не найден'
-          )
+          answer_callback(callback, text: 'Товар не найден')
           return
         end
         
@@ -1269,10 +1284,7 @@ module CoffeeBot
         item = MenuItem[item_id]
         
         unless item
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Товар не найден'
-          )
+          answer_callback(callback, text: 'Товар не найден')
           return
         end
         
@@ -1298,10 +1310,7 @@ module CoffeeBot
         item = MenuItem[item_id]
         
         unless item
-          bot.api.answer_callback_query(
-            callback_query_id: callback.id,
-            text: 'Товар не найден'
-          )
+          answer_callback(callback, text: 'Товар не найден')
           return
         end
         
@@ -1320,6 +1329,86 @@ module CoffeeBot
       end
 
       # === Helpers ===
+
+      # Answer a callback query at most once (Telegram rejects a second answer, so a
+      # toast/alert sent after an earlier answer would never reach the user)
+      #
+      # @param callback [Telegram::Bot::Types::CallbackQuery] The callback query
+      # @param text [String, nil] Optional toast/alert text
+      # @param show_alert [Boolean] Show a modal alert instead of a toast
+      # @return [Boolean] True if an answer was sent
+      def answer_callback(callback, text: nil, show_alert: false)
+        return false if @answered_callback_id == callback.id
+
+        @answered_callback_id = callback.id
+        params = { callback_query_id: callback.id }
+        params[:text] = text if text
+        params[:show_alert] = true if show_alert
+        bot.api.answer_callback_query(**params)
+        true
+      rescue StandardError => e
+        # Best effort: e.g. the query is too old after a slow handler. Never raise from here,
+        # it is also called from an ensure block.
+        log_error('Failed to answer callback query', callback_id: callback.id, error: e.message)
+        false
+      end
+
+      # Allow barista-only actions for whitelisted baristas; deny everybody else
+      #
+      # @param update [Telegram::Bot::Types::Message, Telegram::Bot::Types::CallbackQuery]
+      # @return [Boolean] True if the sender is a barista
+      def authorize_barista(update)
+        user_id = update.from.id
+        return true if Services::AuthService.barista?(user_id)
+
+        if update.is_a?(Telegram::Bot::Types::CallbackQuery)
+          log_info('Unauthorized barista action', user_id: user_id, data: update.data)
+          answer_callback(update, text: BARISTA_ACCESS_DENIED, show_alert: true)
+        else
+          log_info('Unauthorized barista action', user_id: user_id, text: update.text.to_s[0..50])
+          bot.api.send_message(chat_id: user_id, text: BARISTA_ACCESS_DENIED)
+        end
+        false
+      end
+
+      # Notifications for a payment status change found by a sync started from the bot
+      # (check payment button, /cancel). Only the caller that won the transition gets the
+      # flags, so the bot announces it itself, same as StatusSyncer / callback: baristas get
+      # the new order, the refund request (late payment) or the payment problem alert.
+      #
+      # @param order [Order] The order
+      # @param result [Hash] Sync result, see MWallet::Service#sync_status
+      # @param notify_client [Boolean] Also send the client the "payment received" message
+      #   (false when the client is answered in place, e.g. the payment message is edited)
+      def notify_payment_result(order, result, notify_client:)
+        return unless result[:notify_barista] || result[:payment_error] || result[:refund_required]
+
+        # A refund is announced in full: the client keeps a message about the money
+        if notify_client || result[:refund_required]
+          @notifier.notify_payment_result(order, result)
+        elsif result[:payment_error]
+          @notifier.notify_baristas_payment_problem(order,
+            expected_amount: result[:expected_amount],
+            paid_amount: result[:paid_amount]
+          )
+        else
+          @notifier.notify_baristas_new_order(order)
+        end
+      rescue StandardError => e
+        log_error('Failed to send payment notifications', order_id: order.id, error: e.message)
+      end
+
+      # Client text for a payment the provider reported but we could not accept
+      # (order moved to ERROR, baristas have been alerted)
+      def payment_problem_text(order)
+        "⚠️ Оплата по заказу ##{order.id} не принята: сумма платежа не совпадает с суммой заказа. " \
+          'Бариста проверит платёж и свяжется с вами.'
+      end
+
+      # "после истечения срока счёта" / "после отмены заказа"
+      def late_payment_reason(previous_status)
+        previous_status == OrderStatus::CANCELLED ? 'после отмены заказа' : 'после истечения срока счёта'
+      end
 
       def main_keyboard
         Telegram::Bot::Types::ReplyKeyboardMarkup.new(

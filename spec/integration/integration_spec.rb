@@ -4,6 +4,10 @@ require 'spec_helper'
 
 RSpec.describe 'Integration tests' do
   describe 'Callback deduplication' do
+    # A callback is a duplicate only if an identical one (same provider event id, or
+    # same raw body for the same invoice) was already verified AND processed.
+    # The check runs BEFORE the new callback is logged, so it never finds itself.
+    # Real idempotency comes from the atomic status transition (Order#mark_paid!).
     it 'prevents duplicate callback processing' do
       # Create order
       order = create_test_order(create_test_client)
@@ -12,7 +16,7 @@ RSpec.describe 'Integration tests' do
         invoice_id_provider: 'INV-123'
       )
 
-      # First callback
+      # First callback, verified and processed
       callback1 = CallbackLog.log_callback(
         event_id: 'EVT-001',
         invoice_id: 'INV-123',
@@ -20,29 +24,41 @@ RSpec.describe 'Integration tests' do
         raw_body: '{"status":"PAID"}',
         verified: true
       )
+      callback1.mark_processed!
 
-      # Check duplicate detection
-      is_duplicate = CallbackLog.duplicate?('EVT-001', 'INV-123', '{"status":"PAID"}')
-      
-      expect(is_duplicate).to be true
+      # Same event id, or the same body for the same invoice (MWallet has no event id)
+      expect(CallbackLog.duplicate?('EVT-001', 'INV-123', '{"status":"PAID"}')).to be true
+      expect(CallbackLog.duplicate?(nil, 'INV-123', '{"status":"PAID"}')).to be true
     end
 
     it 'allows different callbacks' do
-      callback1 = CallbackLog.log_callback(
+      # Pending callback for the invoice was handled...
+      CallbackLog.log_callback(
         event_id: 'EVT-001',
         invoice_id: 'INV-123',
-        raw_body: '{"status":"PAID"}',
+        raw_body: '{"status":1}',
         verified: true
-      )
+      ).mark_processed!
 
-      callback2 = CallbackLog.log_callback(
-        event_id: 'EVT-002',
-        invoice_id: 'INV-123',
-        raw_body: '{"status":"PAID"}',
-        verified: true
-      )
+      # ...a new event / new body for the same invoice (pending -> paid) is not a duplicate
+      expect(CallbackLog.duplicate?('EVT-002', 'INV-123', '{"status":3}')).to be false
+      expect(CallbackLog.duplicate?(nil, 'INV-123', '{"status":3}')).to be false
+    end
 
-      expect(CallbackLog.duplicate?('EVT-002', 'INV-123', '{"status":"PAID"}')).to be false
+    it 'does not treat unprocessed or failed callbacks as duplicates (provider retry is processed)' do
+      # Crashed mid-processing
+      CallbackLog.log_callback(invoice_id: 'INV-123', raw_body: '{"status":3}', verified: true)
+      # Failed with an error
+      CallbackLog.log_callback(invoice_id: 'INV-123', raw_body: '{"status":3}', verified: true)
+                 .mark_failed!('database is locked')
+
+      expect(CallbackLog.duplicate?(nil, 'INV-123', '{"status":3}')).to be false
+    end
+
+    it 'logs several callbacks for the same invoice without a unique event_id conflict' do
+      2.times { CallbackLog.log_callback(invoice_id: 'INV-123', raw_body: '{"status":1}', verified: true) }
+
+      expect(CallbackLog.by_invoice_id('INV-123').count).to eq(2)
     end
   end
 

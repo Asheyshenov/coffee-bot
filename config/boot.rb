@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
 # Boot file - loads environment, logger, and database
-# This file is required by bin/bot and bin/callback_app
+# This file is required by bin/bot, bin/callback_app and bin/migrate
+
+# Use the gem versions from Gemfile.lock even when started as plain `ruby bin/...`
+ENV['BUNDLE_GEMFILE'] ||= File.expand_path('../Gemfile', __dir__)
+require 'bundler/setup'
 
 require 'dotenv/load'
 require 'logger'
@@ -18,6 +22,9 @@ class JsonFormatter < Logger::Formatter
     "#{log_entry.to_json}\n"
   end
 end
+
+# Flush log lines immediately: under Docker stdout is a pipe, not a TTY
+$stdout.sync = true
 
 # Create application logger
 module CoffeeBot
@@ -57,8 +64,11 @@ module CoffeeBot
     QRPAY_MERCHANT_ID = ENV.fetch('QRPAY_MERCHANT_ID', nil)
     QRPAY_SECRET_KEY = ENV.fetch('QRPAY_SECRET_KEY', nil)
     
+    # HTTP callback server port (bin/callback_app)
+    PORT = ENV.fetch('PORT', 9292).to_i
+
     # Public URL for callbacks
-    PUBLIC_BASE_URL = ENV.fetch('PUBLIC_BASE_URL', 'http://localhost:9292')
+    PUBLIC_BASE_URL = ENV.fetch('PUBLIC_BASE_URL', "http://localhost:#{PORT}")
     QRPAY_CALLBACK_URL = "#{PUBLIC_BASE_URL}/callbacks/odengi/qrpay/result"
     
     # QRPay timeouts

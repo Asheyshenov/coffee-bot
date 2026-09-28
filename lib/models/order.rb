@@ -6,6 +6,7 @@
 
 require_relative '../../config/boot'
 require_relative 'order_status'
+require_relative 'payment'
 require 'securerandom'
 
 class Order < Sequel::Model
@@ -123,12 +124,13 @@ class Order < Sequel::Model
 
   # Transition to new status with validation
   def transition_to!(new_status)
+    old_status = status
     unless can_transition_to?(new_status)
-      raise InvalidStatusTransition, "Cannot transition from #{status} to #{new_status}"
+      raise InvalidStatusTransition, "Cannot transition from #{old_status} to #{new_status}"
     end
 
     update(status: new_status)
-    log_info('Order status changed', order_id: id, from: status, to: new_status)
+    log_info('Order status changed', order_id: id, from: old_status, to: new_status)
     true
   end
 
@@ -211,10 +213,15 @@ class Order < Sequel::Model
   end
 
   # Mark as expired
+  # Conditional UPDATE: a payment that lands concurrently (PAID) is never overwritten
   def expire!
     return false unless status == OrderStatus::INVOICE_CREATED
 
-    update(status: OrderStatus::EXPIRED)
+    expired = self.class.where(id: id, status: OrderStatus::INVOICE_CREATED)
+                        .update(status: OrderStatus::EXPIRED, updated_at: Time.now.utc)
+    refresh
+    return false unless expired == 1
+
     log_info('Order expired', order_id: id)
     true
   end
@@ -232,32 +239,125 @@ class Order < Sequel::Model
     )
   end
 
-  # Mark as paid
+  # Mark as paid (atomic)
+  # A conditional UPDATE (WHERE status = INVOICE_CREATED) guarantees exactly one winner
+  # when callback, StatusSyncer and expirer race; only the winner gets true and only
+  # the winner's caller may send notifications.
+  #
+  # @param payment_data [Hash] :paid_amount, :paid_at, :raw_response
+  # @return [Boolean] True only if this call moved the order to PAID
   def mark_paid!(payment_data = {})
-    return false unless status == OrderStatus::INVOICE_CREATED
+    paid_amount = amount_to_integer(payment_data[:paid_amount]) || total_amount
+    previous_status = nil
 
     DB.transaction do
-      transition_to!(OrderStatus::PAID)
+      previous_status = atomic_status_change!([OrderStatus::INVOICE_CREATED], OrderStatus::PAID)
 
-      # Create or update payment record
-      if payment
-        payment.update(
-          paid_amount: payment_data[:paid_amount] || total_amount,
+      if previous_status
+        save_payment_record!(
+          status: PaymentStatus::PAID,
+          paid_amount: paid_amount,
           paid_at: payment_data[:paid_at] || Time.now.utc,
-          status: PaymentStatus::PAID
-        )
-      else
-        Payment.create(
-          order_id: id,
-          invoice_id_provider: invoice_id_provider,
-          paid_amount: payment_data[:paid_amount] || total_amount,
-          paid_at: payment_data[:paid_at] || Time.now.utc,
-          status: PaymentStatus::PAID
+          raw_status_response: payment_details_json(payment_data[:raw_response], previous_status: previous_status)
         )
       end
     end
 
-    log_info('Order paid', order_id: id)
+    return false unless previous_status
+
+    refresh
+    log_info('Order status changed', order_id: id, from: previous_status, to: OrderStatus::PAID)
+    log_info('Order paid', order_id: id, paid_amount: paid_amount)
+    true
+  end
+
+  # Record a payment that arrived after the order EXPIRED / was CANCELLED (atomic)
+  # The order is not fulfilled and keeps its status; the payment is stored as
+  # REFUND_REQUIRED so staff return the money. Only one caller wins, so the refund
+  # is requested exactly once and late-payment polling stops (settled payment).
+  #
+  # @param paid_amount [Integer, nil] Amount paid in tyiyn (nil -> order total)
+  # @param paid_at [Time, nil] When the provider confirmed the payment
+  # @param raw_response [Hash, nil] Provider data for audit
+  # @return [String, nil] Order status at the time of payment for the winner, nil otherwise
+  def record_late_payment!(paid_amount: nil, paid_at: nil, raw_response: nil)
+    previous_status = nil
+    settled_payment = Payment.where(order_id: id, status: PaymentStatus::SETTLED)
+
+    DB.transaction do
+      current = self.class.for_update.where(id: id).get(:status)
+      next unless OrderStatus::LATE_PAYMENT.include?(current)
+
+      claimed = self.class.where(id: id, status: current)
+                          .exclude(settled_payment.exists)
+                          .update(invoice_status_raw: PaymentStatus::REFUND_REQUIRED, updated_at: Time.now.utc)
+      next unless claimed == 1
+
+      previous_status = current
+      save_payment_record!(
+        status: PaymentStatus::REFUND_REQUIRED,
+        paid_amount: amount_to_integer(paid_amount) || total_amount,
+        paid_at: paid_at || Time.now.utc,
+        raw_status_response: payment_details_json(raw_response, previous_status: current, refund_required: true)
+      )
+    end
+
+    return nil unless previous_status
+
+    refresh
+    log_info('Late payment recorded, refund required', order_id: id, status: previous_status)
+    previous_status
+  end
+
+  # True if a late payment for this order is waiting to be refunded
+  def refund_required?
+    Payment.where(order_id: id, status: PaymentStatus::REFUND_REQUIRED).any?
+  end
+
+  # Mark a REFUND_REQUIRED payment as returned to the client (atomic)
+  #
+  # @param staff_id [Integer] Telegram ID of the barista who made the refund
+  # @return [Boolean] True only for the call that actually closed the refund
+  def mark_refunded!(staff_id)
+    refunded = Payment.where(order_id: id, status: PaymentStatus::REFUND_REQUIRED)
+                      .update(status: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
+    return false unless refunded == 1
+
+    this.update(invoice_status_raw: PaymentStatus::REFUNDED_FULL, updated_at: Time.now.utc)
+    refresh
+    log_info('Late payment refunded', order_id: id, staff_id: staff_id)
+    true
+  end
+
+  # Move order to ERROR because the provider reported a payment we must not accept
+  # (e.g. paid amount below the total). Atomic like mark_paid!, so the problem is
+  # reported exactly once and polling stops (ERROR is terminal).
+  #
+  # @param reason [String] Short explanation stored in invoice_status_raw
+  # @param paid_amount [Integer, nil] Amount actually paid (tyiyn)
+  # @param raw_response [Hash, nil] Provider data for audit
+  # @return [Boolean] True only if this call moved the order to ERROR
+  def mark_payment_error!(reason:, paid_amount: nil, raw_response: nil)
+    previous_status = nil
+
+    DB.transaction do
+      previous_status = atomic_status_change!(
+        [OrderStatus::INVOICE_CREATED], OrderStatus::ERROR, invoice_status_raw: reason.to_s[0, 255]
+      )
+
+      if previous_status
+        save_payment_record!(
+          status: PaymentStatus::FAILED,
+          paid_amount: amount_to_integer(paid_amount),
+          raw_status_response: payment_details_json(raw_response, previous_status: previous_status, error: reason)
+        )
+      end
+    end
+
+    return false unless previous_status
+
+    refresh
+    log_info('Order status changed', order_id: id, from: previous_status, to: OrderStatus::ERROR)
     true
   end
 
@@ -334,6 +434,57 @@ class Order < Sequel::Model
     order_items.map do |item|
       "#{item.item_name} x#{item.qty}"
     end.join(', ')
+  end
+
+  private
+
+  # Conditional UPDATE: changes status only if the row is still in one of
+  # from_statuses and has no settled payment yet (a paid-then-cancelled order is
+  # never resurrected). Must run inside a transaction.
+  #
+  # @return [String, nil] Previous status for the winner, nil if nothing changed
+  def atomic_status_change!(from_statuses, to_status, extra_columns = {})
+    allowed = from_statuses.select { |s| OrderStatus.can_transition?(s, to_status) }
+    settled_payment = Payment.where(order_id: id, status: PaymentStatus::SETTLED)
+
+    # Second attempt covers a status change between the read and the UPDATE
+    # (e.g. expirer moved INVOICE_CREATED -> EXPIRED); on PostgreSQL the row lock prevents it
+    2.times do
+      current = self.class.for_update.where(id: id).get(:status)
+      return nil unless allowed.include?(current)
+
+      changed = self.class.where(id: id, status: current)
+                          .exclude(settled_payment.exists)
+                          .update(extra_columns.merge(status: to_status, updated_at: Time.now.utc))
+      return current if changed == 1
+    end
+
+    nil
+  end
+
+  # Create or update the payment record (inside the caller's transaction)
+  def save_payment_record!(attrs)
+    attrs = attrs.merge(invoice_id_provider: invoice_id_provider)
+    record = Payment.for_update.where(order_id: id).order(:id).first
+
+    if record
+      record.set(attrs).save(raise_on_failure: true)
+    else
+      Payment.new(attrs.merge(order_id: id)).save(raise_on_failure: true)
+    end
+  end
+
+  # Provider data for audit, without the signature
+  def payment_details_json(raw_response, extra = {})
+    raw = raw_response.is_a?(Hash) ? raw_response.reject { |k, _| k.to_s == 'hash' } : raw_response
+    { provider: raw, **extra }.to_json
+  end
+
+  # Provider amount -> Integer tyiyn (nil when missing or unparseable)
+  def amount_to_integer(value)
+    Payment.parse_amount(value)&.to_i
+  rescue ArgumentError
+    nil
   end
 end
 

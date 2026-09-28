@@ -1,4 +1,33 @@
-version: '3.8'
+# Coffee Bot production stack (Docker Compose v2: `docker compose up -d --build`)
+# All values come from .env next to this file; required ones fail fast when missing.
+# Start order: postgres (healthy) -> migrate (one-shot, must succeed) -> bot + callback
+
+# Environment shared by every app container (migrate, bot, callback)
+x-app-env: &app-env
+  RACK_ENV: production
+  # Keep POSTGRES_PASSWORD URL-safe (letters/digits), it is embedded into this URL
+  DATABASE_URL: postgres://coffee:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/coffee_bot
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+  BARISTA_WHITELIST: ${BARISTA_WHITELIST:?Set BARISTA_WHITELIST in .env}
+  ORDER_EXPIRE_MINUTES: ${ORDER_EXPIRE_MINUTES:-15}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env}
+  # MWallet: the bot creates / checks / cancels invoices, the callback verifies signatures
+  MWALLET_BASE_URL: ${MWALLET_BASE_URL:-https://mw-api-test.dengi.kg/api/json/json.php}
+  MWALLET_SID: ${MWALLET_SID:?Set MWALLET_SID in .env}
+  MWALLET_PASSWORD: ${MWALLET_PASSWORD:?Set MWALLET_PASSWORD in .env}
+  MWALLET_API_VERSION: ${MWALLET_API_VERSION:-1005}
+  MWALLET_TEST_MODE: ${MWALLET_TEST_MODE:-true}
+
+# Common container settings (one image for all app services)
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    <<: *app-env
+  restart: unless-stopped
+  volumes:
+    - ./data:/app/data
 
 services:
   # PostgreSQL database for production
@@ -8,72 +37,73 @@ services:
     environment:
       POSTGRES_DB: coffee_bot
       POSTGRES_USER: coffee
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coffee_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # Not published: reachable only from the containers of this stack.
+    # For local psql / backups use `docker compose exec postgres psql -U coffee coffee_bot`
+    # or publish on loopback only:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U coffee -d coffee_bot"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
-  # Telegram bot service
-  bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: coffee-bot
-    command: bin/bot
-    environment:
-      - RACK_ENV=production
-      - DATABASE_URL=postgres://coffee:${POSTGRES_PASSWORD:-coffee_secret}@postgres:5432/coffee_bot
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - BARISTA_WHITELIST=${BARISTA_WHITELIST}
-      - ORDER_EXPIRE_MINUTES=${ORDER_EXPIRE_MINUTES:-15}
-      - QRPAY_BASE_URL=${QRPAY_BASE_URL}
-      - QRPAY_MERCHANT_ID=${QRPAY_MERCHANT_ID}
-      - QRPAY_SECRET_KEY=${QRPAY_SECRET_KEY}
-      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+  # One-shot database migrations: runs before bot and callback, then exits
+  migrate:
+    <<: *app
+    container_name: coffee-bot-migrate
+    command: bin/migrate
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-    volumes:
-      - ./data:/app/data
 
-  # HTTP callback server
+  # Telegram bot service (polling + StatusSyncer + InvoiceExpirer jobs)
+  bot:
+    <<: *app
+    container_name: coffee-bot
+    command: bin/bot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # HTTP callback server (Puma on PORT)
   callback:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app
     container_name: coffee-bot-callback
     command: bin/callback_app
     environment:
-      - RACK_ENV=production
-      - DATABASE_URL=postgres://coffee:${POSTGRES_PASSWORD:-coffee_secret}@postgres:5432/coffee_bot
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - BARISTA_WHITELIST=${BARISTA_WHITELIST}
-      - ORDER_EXPIRE_MINUTES=${ORDER_EXPIRE_MINUTES:-15}
-      - QRPAY_BASE_URL=${QRPAY_BASE_URL}
-      - QRPAY_MERCHANT_ID=${QRPAY_MERCHANT_ID}
-      - QRPAY_SECRET_KEY=${QRPAY_SECRET_KEY}
-      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
-      # MWallet configuration
-      - MWALLET_BASE_URL=${MWALLET_BASE_URL:-https://mw-api-test.dengi.kg/api/json/json.php}
-      - MWALLET_SID=${MWALLET_SID}
-      - MWALLET_PASSWORD=${MWALLET_PASSWORD}
-      - MWALLET_API_VERSION=${MWALLET_API_VERSION:-1005}
-      - MWALLET_TEST_MODE=${MWALLET_TEST_MODE}
+      <<: *app-env
+      PORT: "9292"
     ports:
       - "9292:9292"
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-    volumes:
-      - ./data:/app/data
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # In production only the PUBLIC_BASE_URL host is permitted, so probe /health with that Host header
+      test:
+        - CMD
+        - ruby
+        - -rnet/http
+        - -ruri
+        - -e
+        - >-
+          host = URI(ENV.fetch('PUBLIC_BASE_URL')).host;
+          res = Net::HTTP.start('127.0.0.1', ENV.fetch('PORT', '9292').to_i) { |h| h.get('/health', 'Host' => host) };
+          exit(res.is_a?(Net::HTTPSuccess) ? 0 : 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   postgres_data:

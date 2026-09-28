@@ -7,7 +7,8 @@ gem 'telegram-bot-ruby', '2.4.0'
 
 # Database
 gem 'sequel'
-gem 'sqlite3' # Development only - switch to pg for production
+gem 'sqlite3' # Development / test
+gem 'pg'      # Production (DATABASE_URL=postgres://...)
 
 # Configuration
 gem 'dotenv'
