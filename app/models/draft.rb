@@ -15,14 +15,17 @@ class Draft < ApplicationRecord
 
   acts_as_tenant :tenant
 
-  validates :telegram_user_id, presence: true, uniqueness: { scope: :tenant_id }
+  # One cart per customer and shop: enforced by the unique index (see Customer)
+  validates :telegram_user_id, presence: true
 
   scope :stale, ->(minutes: 60) { where(updated_at: ...minutes.minutes.ago) }
 
   def self.for_user(telegram_user_id) = find_by(telegram_user_id: telegram_user_id)
 
+  # Look up first: create_or_find_by! alone would hit the unique index on every call
   def self.get_or_create(telegram_user_id)
-    create_or_find_by!(telegram_user_id: telegram_user_id) { |draft| draft.state = DEFAULT_STATE.deep_dup }
+    for_user(telegram_user_id) ||
+      create_or_find_by!(telegram_user_id: telegram_user_id) { |draft| draft.state = DEFAULT_STATE.deep_dup }
   end
 
   def self.get_state(telegram_user_id)

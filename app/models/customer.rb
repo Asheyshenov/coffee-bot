@@ -6,14 +6,16 @@ class Customer < ApplicationRecord
 
   has_many :orders, dependent: :restrict_with_error
 
-  validates :telegram_user_id, presence: true, uniqueness: { scope: :tenant_id }
+  # Uniqueness per shop is enforced by the unique index; a uniqueness validation would
+  # make create_or_find_by! raise RecordInvalid for returning customers
+  validates :telegram_user_id, presence: true
 
   # Find or create the customer of the current tenant for a Telegram user and
   # refresh the profile fields (names change)
   #
   # @param user [Telegram::Bot::Types::User]
   def self.from_telegram(user)
-    customer = create_or_find_by!(telegram_user_id: user.id)
+    customer = find_by(telegram_user_id: user.id) || create_or_find_by!(telegram_user_id: user.id)
     customer.update!(username: user.username, first_name: user.first_name, last_name: user.last_name,
                      language_code: user.language_code)
     customer
