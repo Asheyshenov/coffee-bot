@@ -53,7 +53,7 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.string :role, null: false, default: "barista"
       t.boolean :active, null: false, default: true
       t.timestamps
-      t.index [:tenant_id, :telegram_user_id], unique: true
+      t.index [ :tenant_id, :telegram_user_id ], unique: true
       t.check_constraint "role IN ('owner', 'manager', 'barista')", name: "staff_members_role_check"
     end
 
@@ -68,7 +68,7 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.integer :orders_count, null: false, default: 0
       t.datetime :last_order_at
       t.timestamps
-      t.index [:tenant_id, :telegram_user_id], unique: true
+      t.index [ :tenant_id, :telegram_user_id ], unique: true
     end
 
     create_table :menu_items do |t|
@@ -82,7 +82,7 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.string :default_size
       t.integer :position, null: false, default: 0
       t.timestamps
-      t.index [:tenant_id, :category, :position]
+      t.index [ :tenant_id, :category, :position ]
       t.check_constraint "price > 0", name: "menu_items_price_check"
     end
 
@@ -92,7 +92,7 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.bigint :telegram_user_id, null: false
       t.jsonb :state, null: false, default: {}
       t.timestamps
-      t.index [:tenant_id, :telegram_user_id], unique: true
+      t.index [ :tenant_id, :telegram_user_id ], unique: true
     end
 
     create_table :orders do |t|
@@ -119,9 +119,9 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.bigint :assigned_to_barista_id
       t.datetime :assigned_at
       t.timestamps
-      t.index [:tenant_id, :status, :created_at]
-      t.index [:tenant_id, :telegram_user_id, :created_at]
-      t.index [:payment_account_id, :invoice_id_provider], unique: true, where: "invoice_id_provider IS NOT NULL"
+      t.index [ :tenant_id, :status, :created_at ]
+      t.index [ :tenant_id, :telegram_user_id, :created_at ]
+      t.index [ :payment_account_id, :invoice_id_provider ], unique: true, where: "invoice_id_provider IS NOT NULL"
       t.check_constraint "status IN (#{ORDER_STATUSES.map { |s| "'#{s}'" }.join(', ')})", name: "orders_status_check"
       t.check_constraint "total_amount > 0", name: "orders_total_amount_check"
     end
@@ -187,7 +187,7 @@ class CreateTenancyAndOrdering < ActiveRecord::Migration[8.1]
       t.string :process_error
       t.datetime :received_at, null: false, default: -> { "CURRENT_TIMESTAMP" }
       t.timestamps
-      t.index [:payment_account_id, :invoice_id_provider, :received_at]
+      t.index [ :payment_account_id, :invoice_id_provider, :received_at ]
     end
   end
 end

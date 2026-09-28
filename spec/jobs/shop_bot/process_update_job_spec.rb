@@ -91,7 +91,7 @@ RSpec.describe ShopBot::ProcessUpdateJob do
     update = message_update("/start")
     allow(AppLog).to receive(:error)
 
-    [telegram_error(429), Faraday::ConnectionFailed.new("down")].each do |error|
+    [ telegram_error(429), Faraday::ConnectionFailed.new("down") ].each do |error|
       allow_any_instance_of(ShopBot::Router).to receive(:handle).and_raise(error)
 
       expect { described_class.perform_now(tenant.id, bot.id, update) }.not_to have_enqueued_job

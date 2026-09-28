@@ -18,23 +18,23 @@ module OrderStatus
   # Invoice could not be created, or a payment could not be accepted
   ERROR = "ERROR"
 
-  ALL = [NEW, INVOICE_CREATED, PAID, IN_PROGRESS, READY, CANCELLED, EXPIRED, ERROR].freeze
+  ALL = [ NEW, INVOICE_CREATED, PAID, IN_PROGRESS, READY, CANCELLED, EXPIRED, ERROR ].freeze
 
   # Statuses visible to baristas (only paid orders)
-  BARISTA_VISIBLE = [PAID].freeze
-  ACTIVE = [INVOICE_CREATED, PAID, IN_PROGRESS].freeze
-  TERMINAL = [READY, CANCELLED, EXPIRED].freeze
+  BARISTA_VISIBLE = [ PAID ].freeze
+  ACTIVE = [ INVOICE_CREATED, PAID, IN_PROGRESS ].freeze
+  TERMINAL = [ READY, CANCELLED, EXPIRED ].freeze
 
   # Late payment: the customer was charged after the invoice expired / the order was
   # cancelled (e.g. invoiceCancel failed and the QR stayed payable). The order is NOT
   # fulfilled: it keeps its status and the payment is recorded as REFUND_REQUIRED.
-  LATE_PAYMENT = [EXPIRED, CANCELLED].freeze
+  LATE_PAYMENT = [ EXPIRED, CANCELLED ].freeze
 
   TRANSITIONS = {
-    NEW => [INVOICE_CREATED, ERROR],
-    INVOICE_CREATED => [PAID, EXPIRED, CANCELLED, ERROR],
-    PAID => [IN_PROGRESS, CANCELLED],
-    IN_PROGRESS => [READY, CANCELLED],
+    NEW => [ INVOICE_CREATED, ERROR ],
+    INVOICE_CREATED => [ PAID, EXPIRED, CANCELLED, ERROR ],
+    PAID => [ IN_PROGRESS, CANCELLED ],
+    IN_PROGRESS => [ READY, CANCELLED ],
     READY => [],
     CANCELLED => [],
     EXPIRED => [],

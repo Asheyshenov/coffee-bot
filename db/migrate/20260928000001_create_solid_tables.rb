@@ -15,7 +15,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "expires_at", "concurrency_key" ], name: "index_solid_queue_blocked_executions_for_maintenance"
       t.index [ "job_id" ], name: "index_solid_queue_blocked_executions_on_job_id", unique: true
     end
-  
+
     create_table "solid_queue_claimed_executions" do |t|
       t.bigint "job_id", null: false
       t.bigint "process_id"
@@ -23,14 +23,14 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "job_id" ], name: "index_solid_queue_claimed_executions_on_job_id", unique: true
       t.index [ "process_id", "job_id" ], name: "index_solid_queue_claimed_executions_on_process_id_and_job_id"
     end
-  
+
     create_table "solid_queue_failed_executions" do |t|
       t.bigint "job_id", null: false
       t.text "error"
       t.datetime "created_at", null: false
       t.index [ "job_id" ], name: "index_solid_queue_failed_executions_on_job_id", unique: true
     end
-  
+
     create_table "solid_queue_jobs" do |t|
       t.string "queue_name", null: false
       t.string "class_name", null: false
@@ -50,13 +50,13 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "queue_name", "finished_at" ], name: "index_solid_queue_jobs_for_filtering"
       t.index [ "scheduled_at", "finished_at" ], name: "index_solid_queue_jobs_for_alerting"
     end
-  
+
     create_table "solid_queue_pauses" do |t|
       t.string "queue_name", null: false
       t.datetime "created_at", null: false
       t.index [ "queue_name" ], name: "index_solid_queue_pauses_on_queue_name", unique: true
     end
-  
+
     create_table "solid_queue_processes" do |t|
       t.string "kind", null: false
       t.datetime "last_heartbeat_at", null: false
@@ -70,7 +70,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "name", "supervisor_id" ], name: "index_solid_queue_processes_on_name_and_supervisor_id", unique: true
       t.index [ "supervisor_id" ], name: "index_solid_queue_processes_on_supervisor_id"
     end
-  
+
     create_table "solid_queue_ready_executions" do |t|
       t.bigint "job_id", null: false
       t.string "queue_name", null: false
@@ -80,7 +80,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "priority", "job_id" ], name: "index_solid_queue_poll_all"
       t.index [ "queue_name", "priority", "job_id" ], name: "index_solid_queue_poll_by_queue"
     end
-  
+
     create_table "solid_queue_recurring_executions" do |t|
       t.bigint "job_id", null: false
       t.string "task_key", null: false
@@ -89,7 +89,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "job_id" ], name: "index_solid_queue_recurring_executions_on_job_id", unique: true
       t.index [ "task_key", "run_at" ], name: "index_solid_queue_recurring_executions_on_task_key_and_run_at", unique: true
     end
-  
+
     create_table "solid_queue_recurring_tasks" do |t|
       t.string "key", null: false
       t.string "schedule", null: false
@@ -105,7 +105,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "key" ], name: "index_solid_queue_recurring_tasks_on_key", unique: true
       t.index [ "static" ], name: "index_solid_queue_recurring_tasks_on_static"
     end
-  
+
     create_table "solid_queue_scheduled_executions" do |t|
       t.bigint "job_id", null: false
       t.string "queue_name", null: false
@@ -115,7 +115,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "job_id" ], name: "index_solid_queue_scheduled_executions_on_job_id", unique: true
       t.index [ "scheduled_at", "priority", "job_id" ], name: "index_solid_queue_dispatch_all"
     end
-  
+
     create_table "solid_queue_semaphores" do |t|
       t.string "key", null: false
       t.integer "value", default: 1, null: false
@@ -126,7 +126,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "key", "value" ], name: "index_solid_queue_semaphores_on_key_and_value"
       t.index [ "key" ], name: "index_solid_queue_semaphores_on_key", unique: true
     end
-  
+
     create_table "solid_queue_batches" do |t|
       t.string "active_job_batch_id"
       t.string "description"
@@ -145,7 +145,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "active_job_batch_id" ], name: "index_solid_queue_batches_on_active_job_batch_id", unique: true
       t.index [ "finished_at" ], name: "index_solid_queue_batches_on_finished_at"
     end
-  
+
     create_table "solid_queue_batch_executions" do |t|
       t.bigint "job_id", null: false
       t.bigint "batch_id", null: false
@@ -153,7 +153,7 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.index [ "job_id" ], name: "index_solid_queue_batch_executions_on_job_id", unique: true
       t.index [ "batch_id" ], name: "index_solid_queue_batch_executions_on_batch_id"
     end
-  
+
     add_foreign_key "solid_queue_batch_executions", "solid_queue_batches", column: "batch_id", on_delete: :cascade
     add_foreign_key "solid_queue_batch_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
     add_foreign_key "solid_queue_blocked_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
@@ -168,18 +168,18 @@ class CreateSolidTables < ActiveRecord::Migration[8.1]
       t.datetime "created_at", null: false
       t.integer "key_hash", limit: 8, null: false
       t.integer "byte_size", limit: 4, null: false
-      t.index ["byte_size"], name: "index_solid_cache_entries_on_byte_size"
-      t.index ["key_hash", "byte_size"], name: "index_solid_cache_entries_on_key_hash_and_byte_size"
-      t.index ["key_hash"], name: "index_solid_cache_entries_on_key_hash", unique: true
+      t.index [ "byte_size" ], name: "index_solid_cache_entries_on_byte_size"
+      t.index [ "key_hash", "byte_size" ], name: "index_solid_cache_entries_on_key_hash_and_byte_size"
+      t.index [ "key_hash" ], name: "index_solid_cache_entries_on_key_hash", unique: true
     end
     create_table "solid_cable_messages" do |t|
       t.binary "channel", limit: 1024, null: false
       t.binary "payload", limit: 536870912, null: false
       t.datetime "created_at", null: false
       t.integer "channel_hash", limit: 8, null: false
-      t.index ["channel"], name: "index_solid_cable_messages_on_channel"
-      t.index ["channel_hash"], name: "index_solid_cable_messages_on_channel_hash"
-      t.index ["created_at"], name: "index_solid_cable_messages_on_created_at"
+      t.index [ "channel" ], name: "index_solid_cable_messages_on_channel"
+      t.index [ "channel_hash" ], name: "index_solid_cable_messages_on_channel_hash"
+      t.index [ "created_at" ], name: "index_solid_cable_messages_on_created_at"
     end
   end
 end

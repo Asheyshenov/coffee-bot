@@ -14,12 +14,12 @@ class FakeTelegramApi
     if name == :answer_callback_query
       id = kwargs[:callback_query_id]
       if @answered[id]
-        @calls << [:answer_callback_query_rejected, kwargs]
+        @calls << [ :answer_callback_query_rejected, kwargs ]
         return { "ok" => false }
       end
       @answered[id] = true
     end
-    @calls << [name, kwargs]
+    @calls << [ name, kwargs ]
     { "ok" => true, "result" => {} }
   end
 

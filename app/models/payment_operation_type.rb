@@ -4,5 +4,5 @@ module PaymentOperationType
   REFUND = "REFUND"
   VOID = "VOID"
 
-  ALL = [REFUND, VOID].freeze
+  ALL = [ REFUND, VOID ].freeze
 end

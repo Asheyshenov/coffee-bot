@@ -32,14 +32,14 @@ RSpec.describe ShopBot::ResilientApi do
 
     expect(api.send_message(chat_id: 1, text: "hi")).to eq("ok" => true)
     expect(calls).to eq(2)
-    expect(waits).to eq([2])
+    expect(waits).to eq([ 2 ])
   end
 
   it "caps the wait and gives up after a few attempts" do
     allow(raw_api).to receive(:send_message).and_raise(throttled(60))
 
     expect { api.send_message(chat_id: 1, text: "hi") }.to raise_error(Telegram::Bot::Exceptions::ResponseError)
-    expect(waits).to eq([described_class::MAX_WAIT] * (described_class::MAX_ATTEMPTS - 1))
+    expect(waits).to eq([ described_class::MAX_WAIT ] * (described_class::MAX_ATTEMPTS - 1))
   end
 
   it "retries network errors and re-raises other Telegram errors at once" do

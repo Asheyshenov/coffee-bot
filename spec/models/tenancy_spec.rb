@@ -47,13 +47,13 @@ RSpec.describe "Tenant isolation" do
 
   it "runs tenant jobs inside the job's tenant" do
     seen = nil
-    job = Class.new(TenantJob) { define_method(:perform_in_tenant) { |id| seen = [ActsAsTenant.current_tenant.id, Order.find(id).id] } }
+    job = Class.new(TenantJob) { define_method(:perform_in_tenant) { |id| seen = [ ActsAsTenant.current_tenant.id, Order.find(id).id ] } }
     order = make_order
     tenant_id = current_tenant.id
 
     ActsAsTenant.current_tenant = nil
     job.new.perform(tenant_id, order.id)
 
-    expect(seen).to eq([tenant_id, order.id])
+    expect(seen).to eq([ tenant_id, order.id ])
   end
 end

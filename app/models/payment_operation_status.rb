@@ -5,5 +5,5 @@ module PaymentOperationStatus
   COMPLETED = "COMPLETED"
   FAILED = "FAILED"
 
-  ALL = [PENDING, COMPLETED, FAILED].freeze
+  ALL = [ PENDING, COMPLETED, FAILED ].freeze
 end

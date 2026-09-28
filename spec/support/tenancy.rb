@@ -9,7 +9,7 @@ module TenancyHelpers
   STRANGER_ID = 3003
   MWALLET_SECRET = "test-secret"
 
-  def create_tenant(slug: "shop-#{SecureRandom.hex(3)}", name: "Test Coffee", barista_ids: [BARISTA_ID])
+  def create_tenant(slug: "shop-#{SecureRandom.hex(3)}", name: "Test Coffee", barista_ids: [ BARISTA_ID ])
     ActsAsTenant.without_tenant do
       tenant = Tenant.create!(name: name, slug: slug)
       Bot.create!(tenant: tenant, telegram_bot_id: rand(10**9), username: "#{slug.tr('-', '_')}_bot", token: "123:TEST")
