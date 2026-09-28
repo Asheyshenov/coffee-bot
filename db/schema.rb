@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_28_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_28_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -379,6 +379,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_28_000002) do
     t.check_constraint "role::text = ANY (ARRAY['owner'::character varying, 'manager'::character varying, 'barista'::character varying]::text[])", name: "staff_members_role_check"
   end
 
+  create_table "telegram_updates", force: :cascade do |t|
+    t.bigint "bot_id", null: false
+    t.bigint "update_id", null: false
+    t.datetime "created_at", null: false
+    t.index ["bot_id", "update_id"], name: "index_telegram_updates_on_bot_id_and_update_id", unique: true
+    t.index ["created_at"], name: "index_telegram_updates_on_created_at"
+  end
+
   create_table "tenants", force: :cascade do |t|
     t.string "name", null: false
     t.string "slug", null: false
@@ -419,4 +427,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_28_000002) do
   add_foreign_key "solid_queue_recurring_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_scheduled_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "staff_members", "tenants"
+  add_foreign_key "telegram_updates", "bots", on_delete: :cascade
 end

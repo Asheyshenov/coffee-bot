@@ -76,10 +76,10 @@ class Draft < ApplicationRecord
     existing = current_items.find { |i| i["menu_item_id"] == menu_item.id && i["size"] == size }
 
     if existing
-      existing["qty"] = [existing["qty"] + qty, MAX_QTY_PER_LINE].min
+      existing["qty"] = [ existing["qty"] + qty, MAX_QTY_PER_LINE ].min
       existing["line_total"] = existing["qty"] * existing["unit_price"]
     else
-      qty = [qty, MAX_QTY_PER_LINE].min
+      qty = [ qty, MAX_QTY_PER_LINE ].min
       current_items << {
         "menu_item_id" => menu_item.id,
         "name" => menu_item.name,
@@ -130,7 +130,7 @@ class Draft < ApplicationRecord
     current_items = items
     return unless index >= 0 && index < current_items.length && qty.to_i.positive?
 
-    qty = [qty.to_i, MAX_QTY_PER_LINE].min
+    qty = [ qty.to_i, MAX_QTY_PER_LINE ].min
     current_items[index]["qty"] = qty
     current_items[index]["line_total"] = qty * current_items[index]["unit_price"]
     update_state("items" => current_items)

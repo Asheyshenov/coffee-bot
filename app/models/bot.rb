@@ -4,6 +4,7 @@
 # Not tenant-scoped: an incoming webhook is routed to its tenant through the bot.
 class Bot < ApplicationRecord
   belongs_to :tenant
+  has_many :telegram_updates, dependent: :delete_all
 
   encrypts :token
 
@@ -14,7 +15,7 @@ class Bot < ApplicationRecord
 
   # Telegram API client of this bot
   def api
-    @api ||= Telegram::Bot::Client.new(token).api
+    @api ||= ShopBot::ResilientApi.new(Telegram::Bot::Client.new(token).api)
   end
 
   # Where Telegram delivers updates for this bot

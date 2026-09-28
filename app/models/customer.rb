@@ -23,14 +23,14 @@ class Customer < ApplicationRecord
 
   # Name shown to baristas
   def display_name
-    full = [first_name, last_name].compact_blank.join(" ")
+    full = [ first_name, last_name ].compact_blank.join(" ")
     return full if full.present?
 
     username.present? ? "@#{username}" : "User #{telegram_user_id}"
   end
 
   def increment_orders!
-    self.class.where(id: id).update_all(["orders_count = orders_count + 1, last_order_at = ?", Time.current])
+    self.class.where(id: id).update_all([ "orders_count = orders_count + 1, last_order_at = ?", Time.current ])
     reload
   end
 end
