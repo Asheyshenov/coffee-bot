@@ -6,7 +6,7 @@ RSpec.describe MWallet::StatusMapper do
   describe ".map_from_provider" do
     {
       3 => :paid, "3" => :paid, " 3 " => :paid, 3.0 => :paid, "approved" => :paid, "SUCCESS" => :paid,
-      2 => :cancelled, "2" => :cancelled, "canceled" => :cancelled, "cancelled" => :cancelled, "rejected" => :cancelled,
+      2 => :cancelled, "2" => :cancelled, "canceled" => :cancelled, "cancelled" => :cancelled, "rejected" => :pending, "declined" => :pending,
       "expired" => :cancelled,
       1 => :pending, "4" => :pending, 8 => :pending, 9 => :pending, "processing" => :pending, "wait" => :pending,
       6 => :partial_refund,

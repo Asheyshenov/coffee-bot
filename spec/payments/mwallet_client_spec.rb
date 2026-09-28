@@ -156,4 +156,44 @@ RSpec.describe MWallet::Client do
   it 'maps the sandbox status of a cancelled invoice ("canceled")' do
     expect(MWallet::StatusMapper.map_from_provider("canceled")).to eq(:cancelled)
   end
+
+  describe "retries" do
+    subject(:retrying_client) do
+      described_class.new(base_url: "https://mwallet.test/api/json/json.php", sid: "123", password: "secret",
+                          timeout: 1, retry_count: 2, test_mode: true)
+    end
+
+    def fail_first(error)
+      calls = 0
+      allow_any_instance_of(Faraday::Connection).to receive(:post) do
+        calls += 1
+        raise error if calls == 1
+
+        instance_double(Faraday::Response, success?: true, status: 200, body: { "data" => { "invoice_id" => "1" } })
+      end
+      allow(retrying_client).to receive(:sleep)
+      -> { calls }
+    end
+
+    it "never repeats createInvoice after a read timeout (MWallet may have created the invoice)" do
+      calls = fail_first(Faraday::TimeoutError.new("read timeout"))
+
+      expect { retrying_client.create_invoice(order_id: "O-1", amount: 100) }.to raise_error(MWalletError::ProviderTimeout)
+      expect(calls.call).to eq(1)
+    end
+
+    it "repeats createInvoice when the connection could not be opened (nothing was sent)" do
+      calls = fail_first(Faraday::ConnectionFailed.new("connection refused"))
+
+      expect(retrying_client.create_invoice(order_id: "O-1", amount: 100)).to eq("data" => { "invoice_id" => "1" })
+      expect(calls.call).to eq(2)
+    end
+
+    it "repeats read-only statusPayment after a read timeout" do
+      calls = fail_first(Faraday::TimeoutError.new("read timeout"))
+
+      retrying_client.get_status("1")
+      expect(calls.call).to eq(2)
+    end
+  end
 end

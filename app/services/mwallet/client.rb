@@ -32,8 +32,10 @@ module MWallet
 
     # @param params [Hash] :order_id, :desc, :amount (tyiyn), :currency, :user_to, :date_life (s), :result_url
     # @return [Hash] provider response
+    # A read timeout is not retried: the request may have reached MWallet, and a retry
+    # would create a second invoice for the same order. Connection failures are retried.
     def create_invoice(params)
-      request("createInvoice", build_invoice_data(params))
+      request("createInvoice", build_invoice_data(params), retry_read_timeouts: false)
     end
 
     # @return [Hash] provider response, e.g. {"data" => {"status" => "processing"}}
@@ -54,7 +56,7 @@ module MWallet
 
     private
 
-    def request(cmd, data)
+    def request(cmd, data, retry_read_timeouts: true)
       params = {
         "cmd" => cmd,
         "version" => version,
@@ -66,7 +68,7 @@ module MWallet
       log_debug("MWallet request", cmd: cmd, params: mask_sensitive(params).to_json)
 
       signed = @signer.build_signed_request(params)
-      response = with_retry { @connection.post(@path, signed) }
+      response = with_retry(retry_read_timeouts: retry_read_timeouts) { @connection.post(@path, signed) }
       handle_response(response, cmd)
     end
 
@@ -109,13 +111,15 @@ module MWallet
       }.compact
     end
 
-    def with_retry
+    # Faraday::ConnectionFailed (incl. open timeouts): the request was not sent, safe to retry.
+    # Faraday::TimeoutError (read timeout): it may have been processed by MWallet.
+    def with_retry(retry_read_timeouts: true)
       retries = 0
       begin
         yield
       rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
         retries += 1
-        if retries <= retry_count
+        if retries <= retry_count && (retry_read_timeouts || e.is_a?(Faraday::ConnectionFailed))
           AppLog.warn("MWallet request failed, retrying", attempt: retries, of: retry_count, error: e.class.name)
           sleep(2**retries)
           retry

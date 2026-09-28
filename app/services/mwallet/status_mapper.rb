@@ -41,8 +41,10 @@ module MWallet
     def self.map_from_string_status(status)
       case status.downcase.strip
       when "approved", "success", "completed", "paid" then :paid
-      when "cancelled", "canceled", "expired", "rejected" then :cancelled
-      when "wait", "pending", "processing", "created" then :pending
+      when "cancelled", "canceled", "expired" then :cancelled
+      # A declined payment attempt: the invoice stays payable and the client may retry.
+      # Only a closed invoice (or our own expiry) ends the order.
+      when "wait", "pending", "processing", "created", "rejected", "declined" then :pending
       else :unknown
       end
     end
