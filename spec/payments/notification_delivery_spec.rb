@@ -151,6 +151,19 @@ RSpec.describe "Payments: notification delivery" do
       expect(buttons.map(&:callback_data).compact).to eq([ "check_payment_#{order.id}" ])
     end
 
+    it "uploads the QR image downloaded from MWallet (binary PNG bytes, not valid UTF-8)" do
+      order = make_order
+      png = "\x89PNG\r\n\x1A\n\xFF\xD8\x00".dup.force_encoding(Encoding::UTF_8) # Faraday tags bodies as UTF-8
+      allow_any_instance_of(Faraday::Connection).to receive(:get)
+        .and_return(instance_double(Faraday::Response, success?: true, status: 200, body: png))
+
+      notifier.send_payment_qr(order, { paylink_url: "https://pay.test/1", emv_qr_url: "https://qr.test/1.png" })
+
+      photo = telegram.of(:send_photo).sole
+      expect(photo[:photo].read.b).to eq(png.b)
+      expect(telegram.messages_to(client_id).size).to eq(1) # the payment text still follows
+    end
+
     it "uploads the QR image from base64 when there is no image URL" do
       order = make_order
 

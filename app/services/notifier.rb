@@ -363,7 +363,9 @@ class Notifier
   end
 
   def send_photo(chat_id, image_data, caption:)
-    return false unless bot && image_data.present?
+    # Image bytes: String#present? would run a regexp and fail on non-UTF-8 bytes of a PNG
+    image_data = image_data.to_s.b
+    return false unless bot && !image_data.empty?
 
     photo = Faraday::Multipart::FilePart.new(StringIO.new(image_data), "image/png", "qr.png")
     bot.api.send_photo(chat_id: chat_id, photo: photo, caption: caption)
