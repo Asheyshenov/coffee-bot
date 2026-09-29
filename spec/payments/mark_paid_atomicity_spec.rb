@@ -49,9 +49,11 @@ RSpec.describe "Payments: atomic status transitions" do
       expect(order.reload.status).to eq(OrderStatus::PAID)
     end
 
-    it 'a provider "cancelled" status still closes an unpaid invoice' do
+    it 'a provider "cancelled" invoice status still closes an unpaid invoice' do
       order = make_order
-      stub_provider_status(status: "cancelled")
+      # An invoice closed at MWallet reports it in data.status (a declined attempt in
+      # data.payments[] keeps the invoice open)
+      provider_returns("status" => "cancelled")
 
       expect(mwallet_service.sync_status(order)).to include(updated: true, notify_barista: false)
       expect(order.reload.status).to eq(OrderStatus::CANCELLED)

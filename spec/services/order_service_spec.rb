@@ -102,7 +102,8 @@ RSpec.describe OrderService do
       end
 
       it "returns :cancelled without calling the cancel API when the provider already cancelled it" do
-        provider_reports("cancelled")
+        # The invoice itself is closed at MWallet (data.status, as after invoiceCancel)
+        allow_any_instance_of(MWallet::Client).to receive(:get_status).and_return({ "data" => { "status" => "cancelled" } })
         expect_any_instance_of(MWallet::Client).not_to receive(:cancel_invoice)
 
         expect(cancel).to eq(:cancelled)

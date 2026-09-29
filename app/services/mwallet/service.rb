@@ -94,12 +94,32 @@ module MWallet
       payments = data["payments"] || data[:payments]
       payments = [] unless payments.is_a?(Array)
       payments = payments.select { |p| p.is_a?(Hash) }
-      payment = payments.find { |p| StatusMapper.map_from_provider(p["status"] || p[:status]) == :paid } ||
-                payments.first || {}
+      paid_payment = payments.find { |p| StatusMapper.map_from_provider(p["status"] || p[:status]) == :paid }
+      invoice_status = data["status"] || data[:status]
 
-      provider_status = payment["status"] || payment[:status]
-      provider_status = data["status"] || data[:status] if provider_status.nil?
-      internal_status = StatusMapper.map_from_provider(provider_status)
+      if paid_payment
+        payment = paid_payment
+        provider_status = payment["status"] || payment[:status]
+        internal_status = :paid
+      elsif !invoice_status.nil?
+        # The invoice's own status (processing / canceled after invoiceCancel or expiry)
+        payment = {}
+        provider_status = invoice_status
+        internal_status = StatusMapper.map_from_provider(provider_status)
+      else
+        # Only payment attempts, none successful: a canceled / rejected attempt (e.g. the
+        # wallet declined it) does not close the invoice - the customer may try again,
+        # and our own expiry closes the order if nobody pays
+        payment = payments.last || {}
+        provider_status = payment["status"] || payment[:status]
+        internal_status = StatusMapper.map_from_provider(provider_status)
+        if internal_status == :cancelled
+          AppLog.info("MWallet payment attempt failed, invoice kept open", order_id: order.id,
+                                                                           invoice_id: order.invoice_id_provider,
+                                                                           attempts: payments.size)
+          internal_status = :pending
+        end
+      end
 
       if internal_status == :unknown
         AppLog.warn("Unknown MWallet payment status, ignoring", order_id: order.id, invoice_id: order.invoice_id_provider,
